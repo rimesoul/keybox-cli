@@ -14,3 +14,6 @@ mod store_tests;
 
 #[path = "unit/cli_tests.rs"]
 mod cli_tests;
+
+#[path = "unit/interactive_tests.rs"]
+mod interactive_tests;
