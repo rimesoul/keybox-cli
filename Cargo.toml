@@ -15,7 +15,6 @@ arboard = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
-atty = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
