@@ -1,3 +1,4 @@
+use age::x25519::Identity;
 use crate::crypto::{age_ops, identity};
 use crate::tier::{Tier, TierPaths};
 use std::fs;
@@ -31,6 +32,21 @@ pub fn get_credential(
     let ciphertext = fs::read(&file_path).map_err(|e| format!("Failed to read: {}", e))?;
     let ident = identity::load_identity(&paths.private_key)?;
     age_ops::decrypt_with_identity(&ident, &ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))
+}
+
+/// Decrypt a credential using a pre-loaded identity (for tiers where the
+/// private key is stored via a platform protector rather than on disk).
+pub fn get_credential_with_identity(
+    base: &Path, tier: Tier, domain: &str, account: &str, identity: &Identity,
+) -> Result<Vec<u8>, String> {
+    let paths = TierPaths::from_base(base, tier);
+    let file_path = paths.store.join(domain).join(format!("{}.enc", account));
+    if !file_path.exists() {
+        return Err(format!("not found: {}/{}", domain, account));
+    }
+    let ciphertext = fs::read(&file_path).map_err(|e| format!("Failed to read: {}", e))?;
+    age_ops::decrypt_with_identity(identity, &ciphertext)
         .map_err(|e| format!("Decryption failed: {}", e))
 }
 
