@@ -5,3 +5,6 @@ mod crypto_tests;
 
 #[path = "unit/tier_tests.rs"]
 mod tier_tests;
+
+#[path = "unit/protect_tests.rs"]
+mod protect_tests;
