@@ -17,3 +17,6 @@ mod cli_tests;
 
 #[path = "unit/interactive_tests.rs"]
 mod interactive_tests;
+
+#[path = "unit/daemon_protocol_tests.rs"]
+mod daemon_protocol_tests;
