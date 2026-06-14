@@ -162,12 +162,12 @@ fn unlock_with_file(state: &mut DaemonState, key_content: &[u8]) -> Response {
         }
     };
 
-    if encrypted.len() < NONCE_LEN.into() {
+    if encrypted.len() < NONCE_LEN {
         return Response::Error {
             message: "Corrupted identity file".into(),
         };
     }
-    let nonce_len: usize = NONCE_LEN.into();
+    let nonce_len: usize = NONCE_LEN;
     let (nonce_bytes, ciphertext) = encrypted.split_at(nonce_len);
     let unbound_key = match UnboundKey::new(&AES_256_GCM, &aes_key) {
         Ok(k) => k,
