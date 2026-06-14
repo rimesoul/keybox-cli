@@ -87,8 +87,8 @@ pub fn list_accounts(base: &Path, tier: Tier, domain: &str) -> Result<Vec<String
     for entry in fs::read_dir(&domain_dir).map_err(|e| format!("Failed to read domain: {}", e))? {
         let entry = entry.map_err(|_| "entry error".to_string())?;
         if let Some(name) = entry.file_name().to_str() {
-            if name.ends_with(".enc") {
-                accounts.push(name[..name.len()-4].to_string());
+            if let Some(stripped) = name.strip_suffix(".enc") {
+                accounts.push(stripped.to_string());
             }
         }
     }
