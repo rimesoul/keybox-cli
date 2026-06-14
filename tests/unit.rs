@@ -11,3 +11,6 @@ mod protect_tests;
 
 #[path = "unit/store_tests.rs"]
 mod store_tests;
+
+#[path = "unit/cli_tests.rs"]
+mod cli_tests;

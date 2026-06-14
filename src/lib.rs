@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod crypto;
 pub mod protect;
 pub mod store;
