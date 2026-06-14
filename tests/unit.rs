@@ -8,3 +8,6 @@ mod tier_tests;
 
 #[path = "unit/protect_tests.rs"]
 mod protect_tests;
+
+#[path = "unit/store_tests.rs"]
+mod store_tests;
