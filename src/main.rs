@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
+#[cfg(target_os = "macos")]
 use std::str::FromStr;
 
 use clap::Parser;

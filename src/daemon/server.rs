@@ -5,6 +5,10 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+#[cfg(unix)]
 pub fn run_daemon(base: PathBuf, tier: Tier) -> Result<(), String> {
     let socket_path = tier.daemon_socket_path(&base);
     let _ = std::fs::remove_file(&socket_path);
@@ -13,7 +17,6 @@ pub fn run_daemon(base: PathBuf, tier: Tier) -> Result<(), String> {
         .map_err(|e| format!("Failed to bind socket {}: {}", socket_path.display(), e))?;
 
     // Set 0600 permissions
-    use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
         .map_err(|e| format!("Failed to set socket permissions: {}", e))?;
 
@@ -199,4 +202,9 @@ fn unlock_with_file(state: &mut DaemonState, key_content: &[u8]) -> Response {
             message: "Invalid key file: decryption failed".into(),
         },
     }
+}
+
+#[cfg(not(unix))]
+pub fn run_daemon(_base: PathBuf, _tier: Tier) -> Result<(), String> {
+    Err("Daemon is not yet supported on this platform".into())
 }

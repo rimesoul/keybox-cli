@@ -64,7 +64,7 @@ fn dpapi_encrypt(data: &[u8]) -> Result<Vec<u8>, String> {
     let encrypted = unsafe {
         let slice = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize);
         let vec = slice.to_vec();
-        LocalFree(out_blob.pbData as isize);
+        LocalFree(out_blob.pbData as *mut std::ffi::c_void);
         vec
     };
 
@@ -101,7 +101,7 @@ fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
     let decrypted = unsafe {
         let slice = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize);
         let vec = slice.to_vec();
-        LocalFree(out_blob.pbData as isize);
+        LocalFree(out_blob.pbData as *mut std::ffi::c_void);
         vec
     };
 
