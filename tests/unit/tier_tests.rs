@@ -1,12 +1,6 @@
 use keybox::tier::{Tier, TierPaths};
 use std::fs;
-
-fn test_config_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir()
-        .join("keybox-test-t2")
-        .join(format!("{}", std::process::id()));
-    dir
-}
+use super::common::test_config_dir;
 
 #[test]
 fn test_tier_paths_secret() {
@@ -39,16 +33,20 @@ fn test_tier_paths_top_secret() {
 fn test_tier_is_initialized_false() {
     let base = test_config_dir();
     assert!(!Tier::Secret.is_initialized(&base));
+    assert!(!Tier::Confidential.is_initialized(&base));
+    assert!(!Tier::TopSecret.is_initialized(&base));
 }
 
 #[test]
 fn test_tier_is_initialized_true() {
     let base = test_config_dir();
-    let paths = TierPaths::from_base(&base, Tier::Secret);
-    fs::create_dir_all(&paths.store).unwrap();
-    fs::write(&paths.public_key, "fake-key").unwrap();
-    assert!(Tier::Secret.is_initialized(&base));
-    let _ = fs::remove_dir_all(&base);
+    for tier in &[Tier::Secret, Tier::Confidential, Tier::TopSecret] {
+        let paths = TierPaths::from_base(&base, *tier);
+        fs::create_dir_all(paths.public_key.parent().unwrap()).unwrap();
+        fs::write(&paths.public_key, "fake-key").unwrap();
+        assert!(tier.is_initialized(&base));
+        let _ = fs::remove_dir_all(&base);
+    }
 }
 
 #[test]
