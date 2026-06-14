@@ -5,9 +5,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 pub fn generate() -> (Identity, Recipient) {
-    let identity = Identity::generate();
-    let recipient = identity.to_public();
-    (identity, recipient)
+    super::age_ops::generate_keypair()
 }
 
 pub fn save_identity(identity: &Identity, path: &Path) -> Result<(), String> {

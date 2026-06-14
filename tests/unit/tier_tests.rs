@@ -39,13 +39,12 @@ fn test_tier_is_initialized_false() {
 
 #[test]
 fn test_tier_is_initialized_true() {
-    let base = test_config_dir();
+    let base = tempfile::TempDir::new().unwrap();
     for tier in &[Tier::Secret, Tier::Confidential, Tier::TopSecret] {
-        let paths = TierPaths::from_base(&base, *tier);
+        let paths = TierPaths::from_base(base.path(), *tier);
         fs::create_dir_all(paths.public_key.parent().unwrap()).unwrap();
         fs::write(&paths.public_key, "fake-key").unwrap();
-        assert!(tier.is_initialized(&base));
-        let _ = fs::remove_dir_all(&base);
+        assert!(tier.is_initialized(base.path()));
     }
 }
 
