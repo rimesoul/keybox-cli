@@ -4,8 +4,15 @@ use std::fs;
 use std::path::Path;
 
 const SERVICE_NAME: &str = "com.keybox.cli";
+const MARKER_CONTENT: &[u8] = b"keybox-keychain-v1";
 
 pub struct MacOSProtector;
+
+impl Default for MacOSProtector {
+    fn default() -> Self {
+        Self
+    }
+}
 
 impl MacOSProtector {
     pub fn new() -> Self {
@@ -22,8 +29,9 @@ impl IdentityProtector for MacOSProtector {
         let account = Self::account_for_path(path);
         set_generic_password(SERVICE_NAME, &account, data)
             .map_err(|e| format!("Keychain store failed: {}", e))?;
-        // Also write a marker file so is_initialized() works
-        fs::write(path, data).map_err(|e| format!("Failed to write marker: {}", e))
+        // Write a constant marker file (not the secret) so filesystem-aware
+        // checks can confirm existence without leaking plaintext.
+        fs::write(path, MARKER_CONTENT).map_err(|e| format!("Failed to write marker: {}", e))
     }
 
     fn unprotect(&self, path: &Path) -> Result<Vec<u8>, String> {

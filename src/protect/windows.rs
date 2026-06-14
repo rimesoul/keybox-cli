@@ -8,6 +8,12 @@ use windows_sys::Win32::Security::Cryptography::{
 
 pub struct DpapiProtector;
 
+impl Default for DpapiProtector {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl DpapiProtector {
     pub fn new() -> Self {
         Self

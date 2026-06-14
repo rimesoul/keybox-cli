@@ -19,6 +19,10 @@ fn test_macos_protect_unprotect_roundtrip() {
     protector.protect(data, &path).unwrap();
     assert!(path.exists(), "marker file should exist after protect");
 
+    // Verify marker does NOT contain the raw secret (Critical fix: marker is constant)
+    let marker = std::fs::read(&path).unwrap();
+    assert_ne!(marker, data, "marker file must not contain the raw secret");
+
     // Unprotect and verify roundtrip
     let recovered = protector.unprotect(&path).unwrap();
     assert_eq!(recovered, data);
@@ -70,7 +74,7 @@ fn test_linux_protected_file_permissions() {
 
     protector.protect(data, &path).unwrap();
 
-    let metadata = fs::metadata(&path).unwrap();
+    let metadata = std::fs::metadata(&path).unwrap();
     let mode = metadata.permissions().mode();
     // File should be readable and writable only by owner (600)
     assert_eq!(
@@ -79,6 +83,26 @@ fn test_linux_protected_file_permissions() {
         "protected file should have 0o600 permissions, got {:#o}",
         mode & 0o777
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_linux_unprotect_corrupted_file_fails() {
+    let tmp = tempdir().unwrap();
+    let path = tmp.path().join("identity.age");
+
+    let data = b"age-identity-secret-key-material";
+    let protector = LinuxProtector::new();
+
+    protector.protect(data, &path).unwrap();
+
+    // Corrupt the ciphertext by flipping a byte
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[0] ^= 0xFF;
+    std::fs::write(&path, &bytes).unwrap();
+
+    let result = protector.unprotect(&path);
+    assert!(result.is_err(), "decryption of corrupted file should fail");
 }
 
 // ── Windows tests ───────────────────────────────────────────
@@ -100,4 +124,24 @@ fn test_windows_dpapi_protect_unprotect_roundtrip() {
 
     let recovered = protector.unprotect(&path).unwrap();
     assert_eq!(recovered, data);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn test_windows_dpapi_unprotect_corrupted_fails() {
+    let tmp = tempdir().unwrap();
+    let path = tmp.path().join("identity.dat");
+
+    let data = b"age-identity-secret-key-material";
+    let protector = DpapiProtector::new();
+
+    protector.protect(data, &path).unwrap();
+
+    // Corrupt the DPAPI blob by flipping a byte
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[0] ^= 0xFF;
+    std::fs::write(&path, &bytes).unwrap();
+
+    let result = protector.unprotect(&path);
+    assert!(result.is_err(), "decryption of corrupted DPAPI data should fail");
 }

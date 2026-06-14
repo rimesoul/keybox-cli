@@ -1,12 +1,9 @@
 use crate::protect::IdentityProtector;
-use ring::aead::{Aad, BoundKey, LessSafeKey, Nonce, NonceSequence, SealingKey, OpeningKey, UnboundKey, AES_256_GCM};
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
 use ring::rand::{SecureRandom, SystemRandom};
 use sha2::{Sha256, Digest};
 use std::fs;
-use std::io::Read;
 use std::path::Path;
-
-const NONCE_LEN: usize = 12;
 
 /// Encrypts `plaintext` with AES-256-GCM using `key`.
 /// Returns nonce || ciphertext (with embedded auth tag).
@@ -27,7 +24,6 @@ pub fn aes_gcm_encrypt(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, String> 
     key.seal_in_place_append_tag(nonce, aad, &mut in_out)
         .map_err(|e| format!("Encryption failed: {}", e))?;
 
-    // Prepend nonce to ciphertext
     let mut output = Vec::with_capacity(NONCE_LEN + in_out.len());
     output.extend_from_slice(&nonce_bytes);
     output.extend_from_slice(&in_out);
@@ -63,11 +59,12 @@ pub fn aes_gcm_decrypt(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, String>
 }
 
 fn derive_key_from_machine_id() -> Result<[u8; 32], String> {
-    let machine_id = fs::read_to_string("/etc/machine-id")
-        .map_err(|e| format!("Failed to read /etc/machine-id: {}", e))?;
+    let machine_id = read_machine_id()?;
     let machine_id = machine_id.trim();
 
     let mut hasher = Sha256::new();
+    // Domain separation: bind the key to keybox specifically
+    hasher.update(b"keybox-linux-v1");
     hasher.update(machine_id.as_bytes());
     let hash = hasher.finalize();
 
@@ -76,7 +73,22 @@ fn derive_key_from_machine_id() -> Result<[u8; 32], String> {
     Ok(key)
 }
 
+fn read_machine_id() -> Result<String, String> {
+    for path in &["/etc/machine-id", "/var/lib/dbus/machine-id"] {
+        if let Ok(id) = fs::read_to_string(path) {
+            return Ok(id);
+        }
+    }
+    Err("Could not read machine-id from /etc/machine-id or /var/lib/dbus/machine-id".into())
+}
+
 pub struct LinuxProtector;
+
+impl Default for LinuxProtector {
+    fn default() -> Self {
+        Self
+    }
+}
 
 impl LinuxProtector {
     pub fn new() -> Self {
@@ -92,7 +104,6 @@ impl IdentityProtector for LinuxProtector {
         fs::write(path, &ciphertext)
             .map_err(|e| format!("Failed to write protected file: {}", e))?;
 
-        // Set permissions to 600 (owner read/write only)
         set_file_permissions_600(path)?;
 
         Ok(())
