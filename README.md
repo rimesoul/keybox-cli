@@ -1,5 +1,7 @@
 # keybox
 
+[中文文档](README_zh.md)
+
 Cross-platform CLI credential manager. Store passwords, tokens, and API keys
 with three independent security tiers. Works on macOS, Linux, and Windows —
 including headless SSH sessions.
