@@ -200,7 +200,7 @@ fn test_update_command_parsing() {
 fn test_init_command_defaults() {
     let cli = Cli::parse_from(["keybox", "init"]);
     match &cli.command {
-        Command::Init { file, non_interactive } => {
+        Command::Init { file, non_interactive, .. } => {
             assert!(file.is_none());
             assert!(!non_interactive);
         }
@@ -212,7 +212,7 @@ fn test_init_command_defaults() {
 fn test_init_command_with_options() {
     let cli = Cli::parse_from(["keybox", "init", "--file", "/custom/path", "--non-interactive"]);
     match &cli.command {
-        Command::Init { file, non_interactive } => {
+        Command::Init { file, non_interactive, .. } => {
             assert_eq!(file.as_deref(), Some("/custom/path"));
             assert!(*non_interactive);
         }
@@ -321,7 +321,7 @@ fn test_to_operation_mapping() {
     let cmd = Command::Update { domain: "x".into(), account: "y".into(), non_interactive: false, password: None };
     assert_eq!(cmd.to_operation(), Operation::Update);
 
-    let cmd = Command::Init { file: None, non_interactive: false };
+    let cmd = Command::Init { file: None, non_interactive: false, password: None };
     assert_eq!(cmd.to_operation(), Operation::Init);
 
     assert_eq!(Command::Serve.to_operation(), Operation::Serve);

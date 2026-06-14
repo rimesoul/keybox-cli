@@ -6,3 +6,5 @@ mod list_delete_tests;
 mod update_tests;
 #[path = "integration/non_interactive_tests.rs"]
 mod non_interactive_tests;
+#[path = "integration/daemon_tests.rs"]
+mod daemon_tests;

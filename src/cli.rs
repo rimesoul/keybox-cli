@@ -67,6 +67,8 @@ pub enum Command {
         file: Option<String>,
         #[arg(long)]
         non_interactive: bool,
+        #[arg(long, requires = "non_interactive")]
+        password: Option<String>,
     },
     /// Start the daemon for the current tier
     Serve,
