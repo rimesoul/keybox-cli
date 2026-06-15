@@ -17,16 +17,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: keybox
-            dir: linux-x86_64
+            pkg: keybox-linux-x86_64.tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: keybox
-            dir: macos-arm64
+            pkg: keybox-macos-arm64.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: keybox.exe
-            dir: windows-x86_64
+            pkg: keybox-windows-x86_64.zip
 
     steps:
       - uses: actions/checkout@v4
@@ -48,21 +45,22 @@ jobs:
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename artifact
+      - name: Package artifact
         shell: bash
         run: |
-          mkdir -p ${{ matrix.dir }}
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/${{ matrix.target }}/release/keybox.exe ${{ matrix.dir }}/keybox.exe
+            cp target/${{ matrix.target }}/release/keybox.exe keybox.exe
+            7z a ${{ matrix.pkg }} keybox.exe
           else
-            cp target/${{ matrix.target }}/release/keybox ${{ matrix.dir }}/keybox
+            cp target/${{ matrix.target }}/release/keybox keybox
+            tar czf ${{ matrix.pkg }} keybox
           fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.dir }}
-          path: ${{ matrix.dir }}/
+          name: ${{ matrix.pkg }}
+          path: ${{ matrix.pkg }}
 
   release:
     name: Create Release
