@@ -4,15 +4,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 #[cfg(windows)]
-use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, WriteFile, FlushFileBuffers,
-};
+use windows_sys::Win32::Storage::FileSystem::CreateFileW;
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, HANDLE, GENERIC_READ, GENERIC_WRITE};
-#[cfg(windows)]
-use std::ffi::OsStr;
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
+use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 
 #[cfg(unix)]
 pub fn send_request(base: &Path, tier: Tier, request: &Request) -> Result<Response, String> {
@@ -32,7 +26,11 @@ pub fn send_request(base: &Path, tier: Tier, request: &Request) -> Result<Respon
 }
 
 #[cfg(windows)]
-pub fn send_request(base: &Path, tier: Tier, request: &Request) -> Result<Response, String> {
+pub fn send_request(_base: &Path, tier: Tier, request: &Request) -> Result<Response, String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+
     let pipe_name = format!(r"\\.\pipe\keyboxd-{}", tier.dir_name());
     let pipe_name_wide: Vec<u16> = OsStr::new(&pipe_name)
         .encode_wide()
@@ -42,7 +40,7 @@ pub fn send_request(base: &Path, tier: Tier, request: &Request) -> Result<Respon
     let handle = unsafe {
         CreateFileW(
             pipe_name_wide.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE,
+            0xC0000000 | 0x40000000, // GENERIC_READ | GENERIC_WRITE
             0,
             std::ptr::null(),
             3, // OPEN_EXISTING
@@ -59,29 +57,27 @@ pub fn send_request(base: &Path, tier: Tier, request: &Request) -> Result<Respon
         ));
     }
 
+    let mut pipe = unsafe { std::fs::File::from_raw_handle(handle as *mut std::ffi::c_void) };
+
     let data = serialize_request(request)?;
-    let mut bytes_written: u32 = 0;
-    unsafe {
-        WriteFile(handle, data.as_ptr() as *const std::ffi::c_void, data.len() as u32, &mut bytes_written, std::ptr::null_mut());
-        FlushFileBuffers(handle);
-    }
+    pipe.write_all(&data).map_err(|e| format!("Failed to send: {}", e))?;
+    pipe.flush().map_err(|e| format!("Failed to flush: {}", e))?;
 
     let mut buf = vec![0u8; 65536];
-    let mut bytes_read: u32 = 0;
-    unsafe {
-        ReadFile(handle, buf.as_mut_ptr() as *mut std::ffi::c_void, buf.len() as u32, &mut bytes_read, std::ptr::null_mut());
-        CloseHandle(handle);
-    }
-
-    buf.truncate(bytes_read as usize);
-    if buf.is_empty() {
+    let n = pipe.read(&mut buf).map_err(|e| format!("Failed to read: {}", e))?;
+    if n == 0 {
         return Err("Daemon closed connection without response".into());
     }
+
+    buf.truncate(n);
     deserialize_response(&buf)
 }
 
 #[cfg(windows)]
-pub fn is_daemon_running(base: &Path, tier: Tier) -> bool {
+pub fn is_daemon_running(_base: &Path, tier: Tier) -> bool {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
     let pipe_name = format!(r"\\.\pipe\keyboxd-{}", tier.dir_name());
     let pipe_name_wide: Vec<u16> = OsStr::new(&pipe_name)
         .encode_wide()
@@ -91,7 +87,7 @@ pub fn is_daemon_running(base: &Path, tier: Tier) -> bool {
     let handle = unsafe {
         CreateFileW(
             pipe_name_wide.as_ptr(),
-            GENERIC_READ,
+            0x80000000, // GENERIC_READ
             0,
             std::ptr::null(),
             3, // OPEN_EXISTING
