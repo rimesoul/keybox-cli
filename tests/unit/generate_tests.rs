@@ -3,7 +3,7 @@ use keybox::generate;
 // ── charset tests ───────────────────────────────────────────────
 
 #[test]
-fn test_default_charset_includes_lower_upper_digits() {
+fn test_default_charset_includes_lower_upper_digits_underscore() {
     let chars = generate::default_charset();
     // lower
     assert!(chars.contains(&'a'));
@@ -14,7 +14,9 @@ fn test_default_charset_includes_lower_upper_digits() {
     // digits
     assert!(chars.contains(&'0'));
     assert!(chars.contains(&'9'));
-    // no symbols, no chinese in default
+    // underscore in default
+    assert!(chars.contains(&'_'));
+    // no other symbols, no chinese in default
     assert!(!chars.contains(&'!'));
     assert!(!chars.contains(&'\u{4E00}')); // CJK start
 }

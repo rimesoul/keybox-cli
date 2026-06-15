@@ -5,7 +5,9 @@ const SIMILAR_CHARS: &[char] = &['0', 'O', 'I', 'l', '1'];
 const MAX_LENGTH: usize = 256;
 
 pub fn default_charset() -> Vec<char> {
-    build_charset(true, true, true, false, false)
+    let mut chars: Vec<char> = ('a'..='z').chain('A'..='Z').chain('0'..='9').collect();
+    chars.push('_');
+    chars
 }
 
 pub fn build_charset(
@@ -53,7 +55,7 @@ fn build_charset_inner(
     if chinese {
         chars.extend(
             (0x4E00u32..=0x9FFFu32)
-                .filter_map(|cp| char::from_u32(cp)),
+                .filter_map(char::from_u32),
         );
     }
     if exclude_similar {
