@@ -20,3 +20,6 @@ mod interactive_tests;
 
 #[path = "unit/daemon_protocol_tests.rs"]
 mod daemon_protocol_tests;
+
+#[path = "unit/generate_tests.rs"]
+mod generate_tests;
