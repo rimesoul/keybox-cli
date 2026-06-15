@@ -17,13 +17,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: keybox-linux-x86_64
+            artifact: keybox
+            dir: linux-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: keybox-macos-arm64
+            artifact: keybox
+            dir: macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: keybox-windows-x86_64.exe
+            artifact: keybox.exe
+            dir: windows-x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -48,17 +51,18 @@ jobs:
       - name: Rename artifact
         shell: bash
         run: |
+          mkdir -p ${{ matrix.dir }}
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/${{ matrix.target }}/release/keybox.exe ${{ matrix.artifact }}
+            cp target/${{ matrix.target }}/release/keybox.exe ${{ matrix.dir }}/keybox.exe
           else
-            cp target/${{ matrix.target }}/release/keybox ${{ matrix.artifact }}
+            cp target/${{ matrix.target }}/release/keybox ${{ matrix.dir }}/keybox
           fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          name: ${{ matrix.dir }}
+          path: ${{ matrix.dir }}/
 
   release:
     name: Create Release
