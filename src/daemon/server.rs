@@ -5,6 +5,17 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+#[cfg(windows)]
+use windows_sys::Win32::System::Pipes::{
+    CreateNamedPipeW, ConnectNamedPipe, DisconnectNamedPipe,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    ReadFile, WriteFile, FlushFileBuffers, FILE_FLAG_FIRST_PIPE_INSTANCE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, HANDLE};
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -204,7 +215,96 @@ fn unlock_with_file(state: &mut DaemonState, key_content: &[u8]) -> Response {
     }
 }
 
-#[cfg(not(unix))]
-pub fn run_daemon(_base: PathBuf, _tier: Tier) -> Result<(), String> {
-    Err("Daemon is not yet supported on this platform".into())
+#[cfg(windows)]
+pub fn run_daemon(base: PathBuf, tier: Tier) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let pipe_name = format!(r"\\.\pipe\keyboxd-{}", tier.dir_name());
+    let pipe_name_wide: Vec<u16> = OsStr::new(&pipe_name)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut state = DaemonState {
+        tier,
+        locked: true,
+        identity: None,
+        base,
+    };
+
+    loop {
+        let handle = unsafe {
+            CreateNamedPipeW(
+                pipe_name_wide.as_ptr(),
+                3, // PIPE_ACCESS_DUPLEX = 3
+                0, // PIPE_TYPE_BYTE | PIPE_READMODE_BYTE = 0
+                1, // PIPE_UNLIMITED_INSTANCES = 255, but we use 1
+                65536,
+                65536,
+                0,
+                std::ptr::null(),
+            )
+        };
+
+        if handle == INVALID_HANDLE_VALUE {
+            return Err("Failed to create named pipe".into());
+        }
+
+        let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null()) };
+        if connected == 0 {
+            let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            // ERROR_PIPE_CONNECTED (535) means client already connected — that's OK
+            if err != 535 {
+                unsafe { CloseHandle(handle) };
+                return Err(format!("ConnectNamedPipe failed: {}", err));
+            }
+        }
+
+        let mut buf = vec![0u8; 65536];
+        let mut bytes_read: u32 = 0;
+
+        let read_ok = unsafe {
+            ReadFile(
+                handle,
+                buf.as_mut_ptr() as *mut std::ffi::c_void,
+                buf.len() as u32,
+                &mut bytes_read,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if read_ok != 0 && bytes_read > 0 {
+            buf.truncate(bytes_read as usize);
+            let response = handle_request(&buf, &mut state);
+            let resp_data = serialize_response(&response).unwrap_or_else(|e| {
+                serialize_response(&Response::Error { message: e }).unwrap()
+            });
+
+            let mut bytes_written: u32 = 0;
+            unsafe {
+                WriteFile(
+                    handle,
+                    resp_data.as_ptr() as *const std::ffi::c_void,
+                    resp_data.len() as u32,
+                    &mut bytes_written,
+                    std::ptr::null_mut(),
+                );
+                FlushFileBuffers(handle);
+            }
+        }
+
+        unsafe {
+            DisconnectNamedPipe(handle);
+            CloseHandle(handle);
+        }
+
+        if state.identity.is_some() {
+            // If we got a Lock request, the state is now locked
+            // We loop to accept more connections
+        }
+
+        // Break after handling one connection for now
+        // (In a full implementation, this would loop forever until a stop command)
+    }
 }
