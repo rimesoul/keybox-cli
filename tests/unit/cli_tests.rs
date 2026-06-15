@@ -328,4 +328,132 @@ fn test_to_operation_mapping() {
     assert_eq!(Command::Unlock.to_operation(), Operation::Unlock);
     assert_eq!(Command::Lock.to_operation(), Operation::Lock);
     assert_eq!(Command::Stop.to_operation(), Operation::Stop);
+
+    let cmd = Command::Generate {
+        length: 16, lowercase: false, uppercase: false, digits: false,
+        symbols: false, chinese: false, passphrase: false, wordlist: None,
+        clipboard: false, env: None, save: None, exclude_similar: false,
+    };
+    assert_eq!(cmd.to_operation(), Operation::Generate);
+}
+
+// ── Generate command parsing tests ─────────────────────────────────
+
+#[test]
+fn test_generate_command_defaults() {
+    let cli = Cli::parse_from(["keybox", "generate"]);
+    match &cli.command {
+        Command::Generate {
+            length, lowercase, uppercase, digits, symbols, chinese,
+            passphrase, wordlist, clipboard, env, save, exclude_similar,
+        } => {
+            assert_eq!(*length, 16);
+            assert!(!lowercase);
+            assert!(!uppercase);
+            assert!(!digits);
+            assert!(!symbols);
+            assert!(!chinese);
+            assert!(!passphrase);
+            assert!(wordlist.is_none());
+            assert!(!clipboard);
+            assert!(env.is_none());
+            assert!(save.is_none());
+            assert!(!exclude_similar);
+        }
+        _ => panic!("Expected Generate command"),
+    }
+}
+
+#[test]
+fn test_generate_command_with_length() {
+    let cli = Cli::parse_from(["keybox", "generate", "--length", "32"]);
+    match &cli.command {
+        Command::Generate { length, .. } => assert_eq!(*length, 32),
+        _ => panic!("Expected Generate command"),
+    }
+}
+
+#[test]
+fn test_generate_command_with_charset_flags() {
+    let cli = Cli::parse_from(["keybox", "generate", "--lowercase", "--uppercase", "--digits"]);
+    match &cli.command {
+        Command::Generate { lowercase, uppercase, digits, symbols, chinese, .. } => {
+            assert!(*lowercase);
+            assert!(*uppercase);
+            assert!(*digits);
+            assert!(!symbols);
+            assert!(!chinese);
+        }
+        _ => panic!("Expected Generate command"),
+    }
+}
+
+#[test]
+fn test_generate_command_with_passphrase() {
+    let cli = Cli::parse_from(["keybox", "generate", "--passphrase", "--length", "6"]);
+    match &cli.command {
+        Command::Generate { passphrase, length, .. } => {
+            assert!(*passphrase);
+            assert_eq!(*length, 6);
+        }
+        _ => panic!("Expected Generate command"),
+    }
+}
+
+#[test]
+fn test_generate_command_with_clipboard() {
+    let cli = Cli::parse_from(["keybox", "generate", "--clipboard"]);
+    match &cli.command {
+        Command::Generate { clipboard, .. } => assert!(*clipboard),
+        _ => panic!("Expected Generate command"),
+    }
+}
+
+#[test]
+fn test_generate_command_with_env() {
+    let cli = Cli::parse_from(["keybox", "generate", "--env", "MY_PASSWORD"]);
+    match &cli.command {
+        Command::Generate { env, .. } => assert_eq!(env.as_deref(), Some("MY_PASSWORD")),
+        _ => panic!("Expected Generate command"),
+    }
+}
+
+#[test]
+fn test_generate_command_with_save() {
+    let cli = Cli::parse_from(["keybox", "generate", "--save", "example.com", "alice"]);
+    match &cli.command {
+        Command::Generate { save, .. } => {
+            let s = save.as_ref().unwrap();
+            assert_eq!(s[0], "example.com");
+            assert_eq!(s[1], "alice");
+        }
+        _ => panic!("Expected Generate command"),
+    }
+}
+
+#[test]
+fn test_generate_command_env_clipboard_conflict_fails() {
+    let result = Cli::try_parse_from(["keybox", "generate", "--env", "X", "--clipboard"]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_generate_command_with_exclude_similar() {
+    let cli = Cli::parse_from(["keybox", "generate", "--exclude-similar"]);
+    match &cli.command {
+        Command::Generate { exclude_similar, .. } => assert!(*exclude_similar),
+        _ => panic!("Expected Generate command"),
+    }
+}
+
+#[test]
+fn test_generate_command_with_wordlist() {
+    let cli = Cli::parse_from(["keybox", "generate", "--passphrase", "--wordlist", "/path/to/words.txt"]);
+    match &cli.command {
+        Command::Generate { passphrase, wordlist, .. } => {
+            assert!(*passphrase);
+            assert_eq!(wordlist.as_deref(), Some("/path/to/words.txt"));
+        }
+        _ => panic!("Expected Generate command"),
+    }
 }

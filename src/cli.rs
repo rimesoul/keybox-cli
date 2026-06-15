@@ -78,6 +78,38 @@ pub enum Command {
     Lock,
     /// Stop the daemon
     Stop,
+    /// Generate a random password
+    Generate {
+        #[arg(long, default_value_t = 16)]
+        length: usize,
+
+        #[arg(long)]
+        lowercase: bool,
+        #[arg(long)]
+        uppercase: bool,
+        #[arg(long)]
+        digits: bool,
+        #[arg(long)]
+        symbols: bool,
+        #[arg(long)]
+        chinese: bool,
+
+        #[arg(long)]
+        passphrase: bool,
+        #[arg(long)]
+        wordlist: Option<String>,
+
+        #[arg(long, conflicts_with = "env")]
+        clipboard: bool,
+        #[arg(long, conflicts_with = "clipboard")]
+        env: Option<String>,
+
+        #[arg(long, num_args = 2, value_names = ["DOMAIN", "ACCOUNT"])]
+        save: Option<Vec<String>>,
+
+        #[arg(long)]
+        exclude_similar: bool,
+    },
 }
 
 impl Cli {
@@ -111,6 +143,7 @@ pub enum Operation {
     Unlock,
     Lock,
     Stop,
+    Generate,
 }
 
 impl Command {
@@ -126,6 +159,7 @@ impl Command {
             Command::Unlock => Operation::Unlock,
             Command::Lock => Operation::Lock,
             Command::Stop => Operation::Stop,
+            Command::Generate { .. } => Operation::Generate,
         }
     }
 }

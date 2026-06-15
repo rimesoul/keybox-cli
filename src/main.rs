@@ -11,6 +11,7 @@ use keybox::crypto::identity;
 use keybox::daemon;
 use keybox::daemon::protocol::Request;
 use keybox::env_run;
+use keybox::generate;
 use keybox::interactive;
 use keybox::store;
 use keybox::tier::{Tier, TierPaths};
@@ -502,6 +503,100 @@ fn handle_stop(base: &Path, tier: Tier) -> Result<(), String> {
     Ok(())
 }
 
+fn handle_generate(
+    base: &PathBuf,
+    tier: Tier,
+    length: usize,
+    lowercase: bool,
+    uppercase: bool,
+    digits: bool,
+    symbols: bool,
+    chinese: bool,
+    passphrase: bool,
+    wordlist: Option<&str>,
+    clipboard: bool,
+    env_var: Option<&str>,
+    save: Option<&[String]>,
+    exclude_similar: bool,
+) -> Result<(), String> {
+    let password = if passphrase {
+        let words = match wordlist {
+            Some(path) => {
+                let content = fs::read_to_string(path)
+                    .map_err(|e| format!("wordlist not found: {}", e))?;
+                let w: Vec<String> = content.lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|l| l.to_string())
+                    .collect();
+                if w.is_empty() {
+                    return Err("wordlist is empty".into());
+                }
+                w
+            }
+            None => generate::load_wordlist(),
+        };
+        generate::generate_passphrase(length, &words)
+    } else {
+        let has_explicit_charset = lowercase || uppercase || digits || symbols || chinese;
+        let charset = if has_explicit_charset {
+            if exclude_similar {
+                generate::build_charset_with_exclude_similar(lowercase, uppercase, digits, symbols, chinese)
+            } else {
+                generate::build_charset(lowercase, uppercase, digits, symbols, chinese)
+            }
+        } else {
+            if exclude_similar {
+                generate::build_charset_with_exclude_similar(true, true, true, false, false)
+            } else {
+                generate::default_charset()
+            }
+        };
+        if charset.is_empty() {
+            return Err("at least one character set required".into());
+        }
+        generate::generate_password(length, &charset)
+    };
+
+    let secret = password.as_bytes();
+
+    let save_cred = |base: &PathBuf, tier: Tier, save: &[String], secret: &[u8]| -> Result<(), String> {
+        let domain = &save[0];
+        let account = &save[1];
+        keybox::cli::validate_name(domain)?;
+        keybox::cli::validate_name(account)?;
+        ensure_initialized(base, tier)?;
+        store::add_credential(base, tier, domain, account, secret)?;
+        Ok(())
+    };
+
+    if let Some(var_name) = env_var {
+        let args: Vec<String> = std::env::args().skip_while(|a| a != "--").skip(1).collect();
+        if args.is_empty() {
+            return Err("no command specified after -- separator".into());
+        }
+        if let Some(s) = save {
+            save_cred(base, tier, s, secret)?;
+        }
+        let exit_code = env_run::run_with_env(var_name, secret, &args)?;
+        std::process::exit(exit_code);
+    } else if clipboard {
+        let s = std::str::from_utf8(secret).map_err(|_| "Secret contains non-UTF8 data".to_string())?;
+        let mut cb = arboard::Clipboard::new().map_err(|e| format!("Failed to access clipboard: {}", e))?;
+        cb.set_text(s).map_err(|e| format!("Failed to copy: {}", e))?;
+        println!("Password copied to clipboard");
+    } else {
+        let s = std::str::from_utf8(secret).map_err(|_| "Invalid UTF-8".to_string())?;
+        println!("{}", s);
+    }
+
+    if let Some(s) = save {
+        save_cred(base, tier, s, secret)?;
+        println!("Saved to {}/{}", s[0], s[1]);
+    }
+
+    Ok(())
+}
+
 // ── Entry point ──────────────────────────────────────────────────
 
 fn main() {
@@ -568,6 +663,20 @@ fn main() {
         Command::Unlock => handle_unlock(&base, tier),
         Command::Lock => handle_lock(&base, tier),
         Command::Stop => handle_stop(&base, tier),
+        Command::Generate {
+            length, lowercase, uppercase, digits, symbols, chinese,
+            passphrase, wordlist, clipboard, env,
+            save, exclude_similar,
+        } => {
+            handle_generate(
+                &base, tier, *length,
+                *lowercase, *uppercase, *digits, *symbols, *chinese,
+                *passphrase, wordlist.as_deref(),
+                *clipboard, env.as_deref(),
+                save.as_deref(),
+                *exclude_similar,
+            )
+        }
     };
 
     if let Err(e) = result {
