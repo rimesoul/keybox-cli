@@ -8,3 +8,5 @@ mod update_tests;
 mod non_interactive_tests;
 #[path = "integration/daemon_tests.rs"]
 mod daemon_tests;
+#[path = "integration/generate_tests.rs"]
+mod generate_tests;
