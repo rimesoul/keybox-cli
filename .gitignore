@@ -1,1 +1,5 @@
 /target
+/secret
+/confidential
+/top-secret
+top.key
