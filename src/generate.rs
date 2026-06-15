@@ -84,3 +84,41 @@ pub fn generate_password(mut length: usize, charset: &[char]) -> String {
         })
         .collect()
 }
+
+const MAX_PASSPHRASE_WORDS: usize = 128;
+
+pub fn load_wordlist() -> Vec<String> {
+    let raw = include_str!("../eff_large_wordlist.txt");
+    raw.lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() == 2 {
+                Some(parts[1].to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub fn generate_passphrase(mut word_count: usize, wordlist: &[String]) -> String {
+    if word_count == 0 {
+        panic!("word count must be at least 1");
+    }
+    if word_count > MAX_PASSPHRASE_WORDS {
+        word_count = MAX_PASSPHRASE_WORDS;
+    }
+    if wordlist.is_empty() {
+        panic!("wordlist is empty");
+    }
+
+    let mut rng = rand::thread_rng();
+    (0..word_count)
+        .map(|_| {
+            let idx = rng.gen_range(0..wordlist.len());
+            wordlist[idx].as_str()
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}

@@ -118,3 +118,55 @@ fn test_randomness_produces_variation() {
     let pw2 = generate::generate_password(64, &chars);
     assert_ne!(pw1, pw2);
 }
+
+// ── passphrase tests ─────────────────────────────────────────────
+
+/// Count words in a passphrase by greedily matching the longest
+/// wordlist entry at each position. This correctly handles wordlist
+/// entries that contain hyphens (e.g. "drop-down").
+fn count_passphrase_words(passphrase: &str, wordlist: &[String]) -> usize {
+    let mut remaining = passphrase;
+    let mut count = 0;
+    while !remaining.is_empty() {
+        let matched = wordlist
+            .iter()
+            .filter(|w| remaining.starts_with(w.as_str()))
+            .max_by_key(|w| w.len())
+            .expect("passphrase contains a word not in the wordlist");
+        count += 1;
+        remaining = &remaining[matched.len()..];
+        if remaining.starts_with('-') {
+            remaining = &remaining[1..];
+        }
+    }
+    count
+}
+
+#[test]
+fn test_passphrase_default() {
+    let wordlist = generate::load_wordlist();
+    let passphrase = generate::generate_passphrase(4, &wordlist);
+    assert_eq!(count_passphrase_words(&passphrase, &wordlist), 4);
+}
+
+#[test]
+fn test_passphrase_word_count() {
+    let wordlist = generate::load_wordlist();
+    let passphrase = generate::generate_passphrase(6, &wordlist);
+    assert_eq!(count_passphrase_words(&passphrase, &wordlist), 6);
+}
+
+#[test]
+fn test_passphrase_length_clamping() {
+    let wordlist = generate::load_wordlist();
+    let passphrase = generate::generate_passphrase(200, &wordlist);
+    assert_eq!(count_passphrase_words(&passphrase, &wordlist), 128);
+}
+
+#[test]
+fn test_passphrase_randomness() {
+    let wordlist = generate::load_wordlist();
+    let pw1 = generate::generate_passphrase(8, &wordlist);
+    let pw2 = generate::generate_passphrase(8, &wordlist);
+    assert_ne!(pw1, pw2);
+}
