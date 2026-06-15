@@ -503,6 +503,7 @@ fn handle_stop(base: &Path, tier: Tier) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_generate(
     base: &PathBuf,
     tier: Tier,
