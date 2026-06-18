@@ -19,21 +19,31 @@ pub enum CryptLevel {
     Top,
 }
 
+impl std::str::FromStr for CryptLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "secret" => Ok(CryptLevel::Secret),
+            "con" => Ok(CryptLevel::Con),
+            "top" => Ok(CryptLevel::Top),
+            _ => Err(format!("unknown crypt level: {s}")),
+        }
+    }
+}
+
+impl std::fmt::Display for CryptLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl CryptLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
             CryptLevel::Secret => "secret",
             CryptLevel::Con => "con",
             CryptLevel::Top => "top",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "secret" => Some(CryptLevel::Secret),
-            "con" => Some(CryptLevel::Con),
-            "top" => Some(CryptLevel::Top),
-            _ => None,
         }
     }
 }
@@ -62,7 +72,7 @@ pub struct Credential {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_access_at: Option<String>,
-    pub crypt_level: String,
+    pub crypt_level: CryptLevel,
     pub secret: String,
 }
 
@@ -125,7 +135,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             last_access_at: None,
-            crypt_level: "secret".into(),
+            crypt_level: CryptLevel::Secret,
             secret: "base64_encrypted".into(),
         });
         let json = serde_json::to_string(&ks).unwrap();
@@ -136,9 +146,11 @@ mod tests {
         assert_eq!(cred.account, "brian");
         assert_eq!(cred.description, Some("token".to_string()));
         assert_eq!(cred.last_access_at, None);
-        assert_eq!(cred.crypt_level, "secret");
+        assert_eq!(cred.crypt_level, CryptLevel::Secret);
         assert_eq!(cred.secret, "base64_encrypted");
         assert_eq!(cred.tags, vec!["git"]);
+        assert_eq!(cred.created_at, "2026-01-01T00:00:00Z");
+        assert_eq!(cred.updated_at, "2026-01-01T00:00:00Z");
     }
 
     #[test]
