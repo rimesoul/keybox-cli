@@ -27,6 +27,7 @@ security-framework = "2"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+base64 = "0.21"
 
 [profile.release]
 opt-level = "z"

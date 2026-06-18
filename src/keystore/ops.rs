@@ -1,5 +1,6 @@
 use super::format;
 use super::schema::KeyStore;
+use crate::protect::IdentityProtector;
 use std::path::Path;
 
 /// Load and parse the keystore file
@@ -19,6 +20,37 @@ pub fn save_store(path: &Path, store: &KeyStore, aes_key: &[u8]) -> Result<(), S
 /// Determine the keystore file path for the given base config directory
 pub fn keystore_path(base: &Path) -> std::path::PathBuf {
     base.join("keybox.keystore")
+}
+
+/// Protect (encrypt) data using the given protector, returning the encrypted bytes.
+/// Uses a temp file as intermediate to bridge the file-based protector interface
+/// with in-memory byte storage needed by the keystore.
+pub fn protect_to_bytes(
+    protector: &dyn IdentityProtector,
+    data: &[u8],
+    marker_base: &Path,
+) -> Result<Vec<u8>, String> {
+    // Create a temp file for the protector to write to
+    let tmp = marker_base.with_extension("protect.tmp");
+    protector.protect(data, &tmp)?;
+
+    // Read back the protected blob (or marker content on macOS)
+    std::fs::read(&tmp)
+        .map_err(|e| format!("Failed to read protected data: {}", e))
+}
+
+/// Unprotect (decrypt) data previously protected with `protect_to_bytes`.
+/// Writes the encrypted bytes to a temp file so the file-based protector can read it.
+pub fn unprotect_from_bytes(
+    protector: &dyn IdentityProtector,
+    encrypted_bytes: &[u8],
+    marker_path: &Path,
+) -> Result<Vec<u8>, String> {
+    // Write encrypted bytes to temp file so protector can read it
+    std::fs::write(marker_path, encrypted_bytes)
+        .map_err(|e| format!("Failed to write temp identity file: {}", e))?;
+
+    protector.unprotect(marker_path)
 }
 
 #[cfg(test)]
@@ -95,5 +127,61 @@ mod tests {
             keystore_path(base),
             std::path::Path::new("/home/user/.config/keybox/keybox.keystore")
         );
+    }
+}
+
+#[cfg(test)]
+mod protector_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // Test-only protector that simply base64 encodes/decodes
+    struct TestProtector;
+    impl crate::protect::IdentityProtector for TestProtector {
+        fn protect(&self, data: &[u8], path: &std::path::Path) -> Result<(), String> {
+            let encoded = base64_encode(data);
+            std::fs::write(path, encoded).map_err(|e| format!("write: {}", e))
+        }
+        fn unprotect(&self, path: &std::path::Path) -> Result<Vec<u8>, String> {
+            let encoded = std::fs::read_to_string(path).map_err(|e| format!("read: {}", e))?;
+            base64_decode(&encoded)
+        }
+    }
+
+    fn base64_encode(data: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(data)
+    }
+    fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(s.trim())
+            .map_err(|e| format!("base64: {}", e))
+    }
+
+    #[test]
+    fn test_protect_unprotect_roundtrip() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let protector = TestProtector;
+        let original = b"AGE-SECRET-KEY-1TESTTESTTEST";
+
+        let encrypted = protect_to_bytes(&protector, original, &marker).unwrap();
+        // Encrypted bytes should not equal original
+        assert_ne!(encrypted, original);
+
+        let decrypted = unprotect_from_bytes(&protector, &encrypted, &marker).unwrap();
+        assert_eq!(decrypted, original);
+    }
+
+    #[test]
+    fn test_unprotect_wrong_data_fails() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let protector = TestProtector;
+        let garbage = b"not-valid-base64!!!";
+
+        let result = unprotect_from_bytes(&protector, garbage, &marker);
+        assert!(result.is_err());
     }
 }

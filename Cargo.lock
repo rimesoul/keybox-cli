@@ -1000,6 +1000,7 @@ dependencies = [
  "arboard",
  "assert_cmd",
  "atty",
+ "base64",
  "clap",
  "dirs",
  "hex",
