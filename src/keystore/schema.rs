@@ -9,9 +9,38 @@ fn chrono_now_iso() -> String {
     "2026-01-01T00:00:00Z".to_string()
 }
 
+// ── CryptLevel ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CryptLevel {
+    Secret,
+    Con,
+    Top,
+}
+
+impl CryptLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CryptLevel::Secret => "secret",
+            CryptLevel::Con => "con",
+            CryptLevel::Top => "top",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "secret" => Some(CryptLevel::Secret),
+            "con" => Some(CryptLevel::Con),
+            "top" => Some(CryptLevel::Top),
+            _ => None,
+        }
+    }
+}
+
 // ── KeyPair ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KeyPair {
     pub public_key: String,
     pub encrypted_private_key: String,
@@ -20,7 +49,7 @@ pub struct KeyPair {
 
 // ── Credential ──────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Credential {
     pub id: String,
     pub domain: String,
@@ -44,9 +73,9 @@ pub struct KeyStore {
     pub version: u32,
     pub created_at: String,
     pub updated_at: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub key_pairs: HashMap<String, KeyPair>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub credentials: HashMap<String, Credential>,
 }
 
@@ -102,7 +131,13 @@ mod tests {
         let json = serde_json::to_string(&ks).unwrap();
         let parsed: KeyStore = serde_json::from_str(&json).unwrap();
         let cred = &parsed.credentials["github.com:brian"];
+        assert_eq!(cred.id, "uuid-1");
         assert_eq!(cred.domain, "github.com");
+        assert_eq!(cred.account, "brian");
+        assert_eq!(cred.description, Some("token".to_string()));
+        assert_eq!(cred.last_access_at, None);
+        assert_eq!(cred.crypt_level, "secret");
+        assert_eq!(cred.secret, "base64_encrypted");
         assert_eq!(cred.tags, vec!["git"]);
     }
 
@@ -110,5 +145,32 @@ mod tests {
     fn test_credential_key_format() {
         assert_eq!(KeyStore::credential_key("github.com", "brian"), "github.com:brian");
         assert_eq!(KeyStore::credential_key("default", "test"), "default:test");
+    }
+
+    #[test]
+    fn test_keypair_equality() {
+        let kp1 = KeyPair {
+            public_key: "pk".into(),
+            encrypted_private_key: "sk".into(),
+            protector: "test".into(),
+        };
+        let kp2 = kp1.clone();
+        assert_eq!(kp1, kp2);
+    }
+
+    #[test]
+    fn test_deserialize_keystore_missing_optionals() {
+        let json = r#"{"version":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}"#;
+        let ks: KeyStore = serde_json::from_str(json).unwrap();
+        assert!(ks.key_pairs.is_empty());
+        assert!(ks.credentials.is_empty());
+    }
+
+    #[test]
+    fn test_deserialize_credential_missing_tags() {
+        let json = r#"{"id":"x","domain":"d","account":"a","created_at":"t","updated_at":"t","crypt_level":"secret","secret":"s"}"#;
+        let cred: Credential = serde_json::from_str(json).unwrap();
+        assert!(cred.tags.is_empty());
+        assert_eq!(cred.description, None);
     }
 }
