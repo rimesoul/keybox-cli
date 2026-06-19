@@ -142,17 +142,29 @@ Secret level credentials don't need the daemon — they auto-decrypt directly.
 
 ## Non-Interactive Mode
 
-For scripting and CI/CD, use `--no-interactive` with environment variables:
+For scripting and CI/CD, use `--no-interactive` with environment variables.
+
+> **⚠️  Avoid setting secrets directly on the command line:**
+> `KEYBOX_MASTER_PASSPHRASE=mysecret keybox get ...` exposes the value in
+> shell history (`.bash_history`, `.zsh_history`). Always set sensitive
+> environment variables inside a wrapper script or a subshell:
 
 ```bash
-# Add credential (password from env, auto-cleared after use)
-KEYBOX_SET_PASSWORD_ONESHOT=mytoken keybox add github.com:ci --no-interactive
+# ✅ Recommended: wrapper script
+#!/bin/bash
+export KEYBOX_MASTER_PASSPHRASE="mysecret"
+keybox get password -u aws:admin --no-interactive --clipboard
 
-# Get con-level credential (passphrase from env, auto-cleared)
-KEYBOX_MASTER_PASSPHRASE=mysecret keybox get password -u aws:admin --no-interactive --env AWS_TOKEN
+# ✅ Or use a subshell
+env KEYBOX_MASTER_PASSPHRASE="mysecret" \
+    keybox get password -u aws:admin --no-interactive --clipboard
 
-# Get with daemon token (token from env)
-KEYBOX_CON_ACCESS_TOKEN=abc123 keybox get password -u aws:admin --no-interactive --clipboard
+# ✅ Add credential (reads KEYBOX_SET_PASSWORD_ONESHOT automatically)
+keybox add github.com:ci --no-interactive
+
+# ✅ Get with daemon token
+keybox get password -u aws:admin --no-interactive --clipboard \
+    --access-token "$KEYBOX_CON_ACCESS_TOKEN"
 ```
 
 All sensitive env vars are **cleared** (set to empty) after being read to prevent

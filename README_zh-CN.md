@@ -134,17 +134,29 @@ Secret 等级的凭据不需要守护进程 — 直接自动解密。
 
 ## 非交互模式
 
-用于脚本和 CI/CD，使用 `--no-interactive` 配合环境变量：
+用于脚本和 CI/CD，使用 `--no-interactive` 配合环境变量。
+
+> **⚠️  不要在命令行直接设置敏感环境变量：**
+> `KEYBOX_MASTER_PASSPHRASE=mysecret keybox get ...` 会将密码暴露在
+> shell 历史记录中（`.bash_history`、`.zsh_history`）。请在包装脚本或
+> 子 shell 中设置敏感环境变量：
 
 ```bash
-# 添加凭据（密码从环境变量注入，使用后自动清空）
-KEYBOX_SET_PASSWORD_ONESHOT=mytoken keybox add github.com:ci --no-interactive
+# ✅ 推荐：包装脚本
+#!/bin/bash
+export KEYBOX_MASTER_PASSPHRASE="mysecret"
+keybox get password -u aws:admin --no-interactive --clipboard
 
-# 获取 con 等级凭据（主密码从环境变量注入，使用后清空）
-KEYBOX_MASTER_PASSPHRASE=mysecret keybox get password -u aws:admin --no-interactive --env AWS_TOKEN
+# ✅ 或使用子 shell
+env KEYBOX_MASTER_PASSPHRASE="mysecret" \
+    keybox get password -u aws:admin --no-interactive --clipboard
 
-# 使用守护进程令牌获取
-KEYBOX_CON_ACCESS_TOKEN=abc123 keybox get password -u aws:admin --no-interactive --clipboard
+# ✅ 添加凭据（自动读取 KEYBOX_SET_PASSWORD_ONESHOT）
+keybox add github.com:ci --no-interactive
+
+# ✅ 使用守护进程令牌
+keybox get password -u aws:admin --no-interactive --clipboard \
+    --access-token "$KEYBOX_CON_ACCESS_TOKEN"
 ```
 
 所有敏感环境变量在读取后会被**清空**（设为空字符串），防止在 shell 会话中残留。
