@@ -1,20 +1,28 @@
 # keybox
 
-跨平台 CLI 凭据管理器。安全存储密码、Token、API Key，提供三个独立安全等级的加密存储。支持 macOS、Linux、Windows，包括无 GUI 的 SSH 终端环境。
+跨平台 CLI 凭据管理器。将密码、Token、API Key 存储在单个加密凭据库中，支持三个安全等级和元数据标记，方便 LLM 自动推理选择合适的凭据。支持 macOS、Linux、Windows。
 
 ## 安全模型
 
-三个安全等级，各自独立的加密存储。所有凭据使用 [age](https://age-encryption.org)（X25519 + ChaCha20-Poly1305）加密。差异在于 age 身份私钥的保护方式：
+所有凭据存储在单个文件（`~/.config/keybox/keybox.keystore`）中。**双层加密**同时保护元数据和凭据值：
 
-| 等级 | Flag | 私钥保护 | 安全根基 |
-|------|------|---------|---------|
-| **秘密** | `--secret` | 系统绑定（Keychain / DPAPI / machine-id） | 机器物理访问 |
-| **机密** | `--confidential` | 密码派生（age passphrase / scrypt） | 人脑记忆 |
-| **绝密** | `--top-secret` | 文件哈希派生（SHA-256 → AES-256-GCM） | 物理介质持有 |
+| 层 | 用途 | 加密算法 |
+|----|------|---------|
+| **外层** | 保护元数据 + 加密的凭据 + 密钥对 | AES-256-GCM（系统保护器） |
+| **内层** | 独立保护每个凭据的密码值 | age X25519 + ChaCha20-Poly1305 |
 
-- 三个等级**完全独立** — 破解一个不会影响其他
-- 凭据永不以明文存储于磁盘
-- 机密和绝密等级支持守护进程，将解密后的私钥缓存在内存中（类似 ssh-agent）
+三个加密等级决定了内层 age 私钥的保护方式：
+
+| 等级 | 安全根基 | 私钥保护方式 |
+|------|---------|-------------|
+| **secret**（默认） | 机器物理访问 | 系统保护器（Keychain / DPAPI / machine-id）— 自动解密 |
+| **con**（机密） | 人脑记忆 | 主密码通过 age scrypt 保护 |
+| **top**（绝密） | 物理介质持有 | 密钥文件内容 SHA-256 → AES-256-GCM |
+
+- **加密**（添加凭据）只需公钥 — 永远不需要输入密码或密钥文件
+- **解密**（获取密码）需要通过对应等级的安全根基解锁私钥
+- 所有元数据（名称、描述、标签、时间戳）由外层加密保护
+- 双层 AEAD 完整性：AES-256-GCM 保护文件，age AEAD 保护每个凭据
 
 ## 安装
 
@@ -34,143 +42,143 @@ cargo build --release
 ## 快速开始
 
 ```bash
-# 秘密等级（默认）— 自动初始化，无需任何设置
-keybox add gitea pat               # 交互式输入 Token
-keybox get gitea pat               # 输出到 stdout
+# 初始化（secret 等级自动初始化，con/top 可选）
+keybox init
 
-# 非交互模式（脚本/自动化）
-keybox add gitea pat --non-interactive --password "ghp_xxx"
+# 添加凭据
+keybox add github.com:brian           # 交互式输入 token，默认 secret 等级
+keybox add aws:admin --level con      # 存储在机密等级
+keybox add :my-root --tags "default"  # 省略 domain 使用默认值
 
-# 机密等级 — 需要先初始化并设置主密码
-keybox --confidential init
-keybox --confidential add ldap workuser
+# 获取凭据（默认不输出明文密码到终端）
+keybox get password -u github.com:brian          # → 复制到剪贴板（secret 自动解密）
+keybox get password -u aws:admin                 # → 提示输入主密码（con 等级）
+keybox get description -u github.com:brian       # → 输出到 stdout（元数据，无需解密）
 
-# 注入子进程环境变量，不在终端显示凭据
-keybox get gitea pat --env GITEA_TOKEN -- ./my-script.sh
+# 强制明文显示
+keybox get password -u github.com:brian --force
 
-# 复制到剪贴板（终端不显示）
-keybox get gitea pat --clipboard
+# 列出所有凭据（默认 JSON 格式）
+keybox list
+keybox list --fmt table --tag git
+
+# 生成随机密码
+keybox gen --length 32 --clipboard
+keybox gen --save github.com:new-token --description "CI 机器人"
 ```
 
 ## 命令参考
 
 ```
-keybox [--secret|-s|--sec] [--confidential|-c|--con] [--top-secret|-t|--top]
-       <operation> [args...]
+keybox [--base <dir>] <command> [args...]
 ```
 
-### 操作
+### 命令
 
 | 命令 | 说明 |
-|---------|-------------|
-| `add <domain> <account>` | 添加凭据（交互式提示或 `--non-interactive --password`） |
-| `get <domain> <account>` | 获取凭据（`--clipboard` / `--env <VAR>` / stdout） |
-| `list [domain]` | 列出所有 domain，或指定 domain 下的 account（`--json`） |
-| `update <domain> <account>` | 更新已有凭据 |
-| `delete <domain> <account>` | 删除凭据（需确认） |
-| `init` | 初始化当前等级（机密/绝密需显式调用） |
-| `serve` | 启动守护进程（仅机密/绝密） |
-| `unlock` | 预解锁守护进程 |
-| `lock` | 锁定守护进程（清除内存中的私钥） |
+|------|------|
+| `init [--level <secret\|con\|top>]` | 初始化凭据库和/或加密等级 |
+| `add <domain:account> [--level] [--description] [--tags]` | 添加凭据（默认 secret 等级） |
+| `get [field] -u <domain:account>` | 获取字段：password、description、tags、metadata、all |
+| `list [--fmt json\|table] [--level] [--tag]` | 列出凭据（默认 JSON，密码显示为 `<masked>`） |
+| `edit <domain:account> --description/--tags` | 编辑凭据元数据 |
+| `update password <domain:account>` | 更新凭据密码（先验证旧密码） |
+| `delete <domain:account>` | 删除凭据 |
+| `gen [--length] [--passphrase] [--save]` | 生成随机密码/助记短语 |
+| `serve` | 启动后台守护进程 |
+| `unlock --level <con\|top> [--timeout]` | 解锁守护进程，获取访问令牌 |
+| `lock` | 锁定守护进程（吊销所有令牌） |
 | `stop` | 停止守护进程 |
 
 ### `get` 输出选项
 
 | Flag | 行为 |
-|------|----------|
-| *(默认)* | 输出到 stdout |
-| `--clipboard` | 复制到系统剪贴板 |
-| `--env <VAR> -- <cmd>` | 注入子进程环境变量 |
+|------|------|
+| *(默认)* | 显示安全警告 — 不加 `--force` 不输出明文密码 |
+| `--clipboard, -c` | 复制密码到剪贴板 |
+| `--env, -e <VAR>` 或 `-e <VAR1:VAR2>` | 注入为环境变量 |
+| `--force, -f` | 强制输出密码明文到 stdout |
+| `--access-token <token>` | 使用守护进程令牌（con/top，非交互） |
 
-### 等级 Flag 别名
+### 加密等级
 
-| 全称 | 短写 | 别名 |
-|------|-------|-------|
-| `--secret` | `-s` | `--sec` |
-| `--confidential` | `-c` | `--con` |
-| `--top-secret` | `-t` | `--top` |
-
-Flag 可以放在命令的任意位置。默认等级为 `--secret`。
-
-## 守护进程
-
-机密和绝密等级使用后台守护进程将解密后的身份私钥缓存在内存中：
+等级通过 `--level` 在每个命令中指定，不再是全局 flag：
 
 ```bash
-# 启动守护进程（LOCKED 状态）
-keybox --confidential serve
-
-# 解锁（输入一次主密码）
-keybox --confidential unlock
-
-# 之后所有命令无需重复输入密码
-keybox --confidential get gitea pat
-keybox --confidential list openai
-
-# 完成后锁定
-keybox --confidential lock
-
-# 或者完全停止
-keybox --confidential stop
+keybox init --level con              # 初始化机密等级
+keybox add aws:root --level top      # 以绝密等级添加
+keybox unlock --level con,top        # 同时解锁多个等级
 ```
 
-当 CLI 命令需要守护进程但未运行时，会自动启动。
+未指定时默认为 `secret`。`:account` 简写形式使用 `default` 作为域名。
+
+## 守护进程与令牌访问
+
+守护进程（`keybox serve`）将凭据库保持在内存中。对于 con/top 等级，解锁后会生成有时限的访问令牌：
+
+```bash
+# 启动守护进程
+keybox serve
+
+# 解锁 con 等级（提示输入主密码），获取 30 分钟有效令牌
+keybox unlock --level con --timeout 30
+# → Token: dGhpcyBpcyBhIHRva2Vu...
+
+# 使用令牌进行非交互访问
+keybox get password -u aws:admin --access-token dGhpcyBpcyBhIHRva2Vu...
+
+# 锁定会吊销所有令牌
+keybox lock
+```
+
+Secret 等级的凭据不需要守护进程 — 直接自动解密。
 
 ## 非交互模式
 
-用于脚本、CI/CD，或 stdin 不是 TTY 的场景：
+用于脚本和 CI/CD，使用 `--no-interactive` 配合环境变量：
 
 ```bash
-keybox add gitea pat --non-interactive --password "token123"
-keybox update gitea pat --non-interactive --password "new-token"
-keybox --confidential init --non-interactive --password "master123"
-keybox --top-secret init --non-interactive --file /path/to/key
+# 添加凭据（密码从环境变量注入，使用后自动清空）
+KEYBOX_SET_PASSWORD_ONESHOT=mytoken keybox add github.com:ci --no-interactive
+
+# 获取 con 等级凭据（主密码从环境变量注入，使用后清空）
+KEYBOX_MASTER_PASSPHRASE=mysecret keybox get password -u aws:admin --no-interactive --env AWS_TOKEN
+
+# 使用守护进程令牌获取
+KEYBOX_CON_ACCESS_TOKEN=abc123 keybox get password -u aws:admin --no-interactive --clipboard
 ```
 
-当检测到子进程调用（或设置了 `KEYBOX_LLM_CALLING=1`），keybox 会拒绝交互并给出引导：
+所有敏感环境变量在读取后会被**清空**（设为空字符串），防止在 shell 会话中残留。
 
-```
-Error: keybox requires interactive input (LLM calling mode detected).
-Possible resolutions (in order of preference):
-  1. Ask the user to unlock the daemon directly on the machine:
-     `keybox --confidential unlock` (or `--top-secret`).
-     Once unlocked, all commands will work without prompts.
-  2. Use non-interactive mode with a credential provided by the human:
-     `--non-interactive --password <value>`
-  3. If the daemon is already running but locked, ask the user to unlock it.
-  4. Ask the human for the credential directly:
-     "I need access to [description]. Can you provide the value or unlock keybox?"
-```
+当检测到子进程调用（或设置了 `KEYBOX_LLM_CALLING=1`），keybox 会拒绝交互并给出引导提示。
 
 ## 存储结构
 
-所有数据在 `~/.config/keybox/` 下：
+单个凭据库文件 `~/.config/keybox/keybox.keystore`：
 
 ```
-~/.config/keybox/
-├── secret/                    # 秘密等级：系统绑定
-│   ├── identity.private.enc
-│   ├── identity.pub
-│   └── store/<domain>/<account>.enc
-├── confidential/              # 机密等级：密码保护
-│   ├── identity.private.enc   # age passphrase 加密
-│   ├── identity.pub
-│   └── store/<domain>/<account>.enc
-└── top-secret/                # 绝密等级：文件哈希保护
-    ├── identity.private.enc   # AES-256-GCM 加密
-    ├── identity.pub
-    └── store/<domain>/<account>.enc
+二进制头部（26 字节）：
+  magic "KBOX" | version | key_ref | nonce
+加密体（AES-256-GCM）：
+  JSON 包含 key_pairs + credentials + metadata
 ```
+
+每个凭据记录包含：
+- `id`、`domain`、`account` — 标识符
+- `description`、`tags` — LLM 友好的元数据
+- `created_at`、`updated_at`、`last_access_at` — 时间戳
+- `crypt_level` — secret / con / top
+- `secret` — age 加密的凭据值（base64）
 
 ## 平台差异
 
-| 平台 | 秘密等级保护机制 |
-|------|----------------|
+| 平台 | 系统保护器 |
+|------|-----------|
 | macOS | Keychain Services |
 | Windows | DPAPI（CryptProtectData） |
 | Linux | /etc/machine-id + AES-256-GCM + chmod 600 |
 
-守护进程在 macOS/Linux 上使用 Unix domain socket，Windows 暂不支持守护进程（返回错误提示 — 秘密等级在 Windows 上可独立正常使用）。
+守护进程在 macOS/Linux 上使用 Unix domain socket，Windows 使用命名管道。
 
 ## 构建与测试
 
