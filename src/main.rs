@@ -549,6 +549,7 @@ fn handle_add(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_get(
     base: &Path,
     field: Option<&str>,
