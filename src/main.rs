@@ -771,31 +771,78 @@ fn handle_delete(base: &Path, target: &str, no_interactive: bool) -> Result<(), 
     Ok(())
 }
 
-fn handle_serve(_base: &Path) -> Result<(), String> {
-    eprintln!("Daemon support will be implemented in Phase 5.");
-    println!("Daemon started (stub)");
-    Ok(())
+fn handle_serve(base: &Path) -> Result<(), String> {
+    keybox::daemon::server::run_daemon(base.to_path_buf())
 }
 
 fn handle_unlock(
-    _base: &Path,
-    _level: &str,
-    _timeout: u64,
+    base: &Path,
+    level: &str,
+    timeout: u64,
     _clipboard: bool,
     _env: Option<&str>,
 ) -> Result<(), String> {
-    eprintln!("Daemon support will be implemented in Phase 5.");
-    Ok(())
+    use keybox::daemon::client;
+    use keybox::daemon::protocol::Response;
+
+    let (passphrase, keyfile_path) = match level {
+        "con" => {
+            let pp = interactive::prompt_password("Enter master passphrase for confidential tier: ")?;
+            (Some(pp), None)
+        }
+        "top" => {
+            let path = interactive::prompt_input("Key file path for top-secret tier: ")?;
+            if path.is_empty() {
+                return Err("Key file path is required for top-secret tier".into());
+            }
+            (None, Some(path))
+        }
+        _ => return Err(format!("Unknown level: '{}'. Use 'con' or 'top'.", level)),
+    };
+
+    let response = client::unlock(base, level, passphrase.as_deref(), keyfile_path.as_deref(), timeout)?;
+
+    match response {
+        Response::Unlocked { token, level: l } => {
+            eprintln!("Unlocked {} tier.", l);
+            println!("{}", token);
+            Ok(())
+        }
+        Response::Error(msg) => Err(msg),
+        _ => Err("Unexpected response from daemon".into()),
+    }
 }
 
-fn handle_lock(_base: &Path) -> Result<(), String> {
-    eprintln!("Daemon support will be implemented in Phase 5.");
-    Ok(())
+fn handle_lock(base: &Path) -> Result<(), String> {
+    use keybox::daemon::client;
+    use keybox::daemon::protocol::Response;
+
+    let response = client::lock(base)?;
+
+    match response {
+        Response::Locked => {
+            eprintln!("Daemon locked. All tokens revoked.");
+            Ok(())
+        }
+        Response::Error(msg) => Err(msg),
+        _ => Err("Unexpected response from daemon".into()),
+    }
 }
 
-fn handle_stop(_base: &Path) -> Result<(), String> {
-    eprintln!("Daemon support will be implemented in Phase 5.");
-    Ok(())
+fn handle_stop(base: &Path) -> Result<(), String> {
+    use keybox::daemon::client;
+    use keybox::daemon::protocol::Response;
+
+    let response = client::stop(base)?;
+
+    match response {
+        Response::Shutdown => {
+            eprintln!("Daemon stopped.");
+            Ok(())
+        }
+        Response::Error(msg) => Err(msg),
+        _ => Err("Unexpected response from daemon".into()),
+    }
 }
 
 fn handle_generate(base: &Path, args: &GenerateArgs) -> Result<(), String> {
