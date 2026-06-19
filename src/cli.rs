@@ -1,180 +1,225 @@
-use clap::{Parser, Subcommand, ArgGroup};
+use clap::{Parser, Subcommand};
 
-/// Cross-platform CLI credential manager
-#[derive(Parser, Debug)]
-#[command(name = "keybox", about = "Cross-platform CLI credential manager")]
-#[command(group = ArgGroup::new("level").args(&["secret", "confidential", "top_secret"]).multiple(false))]
+#[derive(Parser)]
+#[command(name = "keybox", about = "Encrypted credential manager", version)]
 pub struct Cli {
-    /// System-bound tier (default)
-    #[arg(long = "secret", short = 's', alias = "sec", group = "level", global = true)]
-    pub secret: bool,
-
-    /// Password-protected tier
-    #[arg(long = "confidential", short = 'c', alias = "con", group = "level", global = true)]
-    pub confidential: bool,
-
-    /// File-hash-protected tier
-    #[arg(long = "top-secret", short = 't', alias = "top", group = "level", global = true)]
-    pub top_secret: bool,
+    /// Base config directory (default: ~/.config/keybox)
+    #[arg(long, global = true)]
+    pub base: Option<String>,
 
     #[command(subcommand)]
     pub command: Command,
 }
 
-#[derive(Subcommand, Debug, PartialEq, Eq)]
+#[derive(Subcommand)]
 pub enum Command {
+    /// Initialize keystore and/or crypt levels
+    Init {
+        /// Crypt level to initialize: secret, con, or top
+        #[arg(long)]
+        level: Option<String>,
+    },
+
     /// Add a new credential
     Add {
-        domain: String,
-        account: String,
+        /// Credential key as domain:account (use ":account" for default domain)
+        target: String,
+
+        /// Crypt level: secret (default), con, or top
         #[arg(long)]
-        non_interactive: bool,
-        #[arg(long, requires = "non_interactive")]
-        password: Option<String>,
+        level: Option<String>,
+
+        /// Human-readable description
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Comma-separated tags
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+
+        /// Read secret from stdin
+        #[arg(long)]
+        stdin: bool,
+
+        /// Non-interactive mode
+        #[arg(long)]
+        no_interactive: bool,
     },
-    /// Retrieve a credential
+
+    /// Retrieve credential fields
     Get {
-        domain: String,
-        account: String,
-        #[arg(long, conflicts_with = "clipboard")]
-        env: Option<String>,
-        #[arg(long, conflicts_with = "env")]
+        /// Field: password, description, domain, account, tags, metadata, all (default: all)
+        field: Option<String>,
+
+        /// Credential key as domain:account
+        #[arg(short = 'u', long)]
+        user: String,
+
+        /// Copy password to clipboard
+        #[arg(short = 'c', long)]
         clipboard: bool,
-    },
-    /// List domains or accounts
-    List {
-        domain: Option<String>,
+
+        /// Inject as env var: VAR or VAR1:VAR2
+        #[arg(short = 'e', long)]
+        env: Option<String>,
+
+        /// Force display password to stdout
+        #[arg(short = 'f', long)]
+        force: bool,
+
+        /// Daemon access token
         #[arg(long)]
-        json: bool,
+        access_token: Option<String>,
+
+        /// Non-interactive mode
+        #[arg(long)]
+        no_interactive: bool,
     },
+
+    /// List credentials (default format: json)
+    List {
+        /// Output format: json (default) or table
+        #[arg(long = "fmt", long = "format", default_value = "json")]
+        format: String,
+
+        /// Filter by crypt level
+        #[arg(long)]
+        level: Option<String>,
+
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
+    },
+
+    /// Edit credential metadata
+    Edit {
+        /// Credential key as domain:account
+        target: String,
+
+        /// New description
+        #[arg(long)]
+        description: Option<String>,
+
+        /// New comma-separated tags
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+
+        /// Non-interactive mode
+        #[arg(long)]
+        no_interactive: bool,
+    },
+
+    /// Update credential password
+    Update {
+        #[command(subcommand)]
+        sub: UpdateSub,
+    },
+
     /// Delete a credential
     Delete {
-        domain: String,
-        account: String,
-    },
-    /// Update an existing credential
-    Update {
-        domain: String,
-        account: String,
+        /// Credential key as domain:account
+        target: String,
+
+        /// Non-interactive mode
         #[arg(long)]
-        non_interactive: bool,
-        #[arg(long, requires = "non_interactive")]
-        password: Option<String>,
+        no_interactive: bool,
     },
-    /// Initialize the current tier
-    Init {
-        #[arg(long)]
-        file: Option<String>,
-        #[arg(long)]
-        non_interactive: bool,
-        #[arg(long, requires = "non_interactive")]
-        password: Option<String>,
-    },
-    /// Start the daemon for the current tier
+
+    /// Start the background daemon
     Serve,
-    /// Pre-unlock the daemon
-    Unlock,
-    /// Lock the daemon (clear in-memory key)
+
+    /// Unlock daemon for crypt level(s)
+    Unlock {
+        /// Crypt level(s): con, top, or con,top
+        #[arg(long)]
+        level: String,
+
+        /// Token timeout in minutes (default: 30)
+        #[arg(long, default_value = "30")]
+        timeout: u64,
+
+        /// Copy token to clipboard
+        #[arg(long)]
+        clipboard: bool,
+
+        /// Inject token into env var
+        #[arg(long)]
+        env: Option<String>,
+    },
+
+    /// Lock daemon (revoke all tokens)
     Lock,
+
     /// Stop the daemon
     Stop,
-    /// Generate a random password
-    Generate {
-        #[arg(long, default_value_t = 16)]
-        length: usize,
 
-        #[arg(long)]
-        lowercase: bool,
-        #[arg(long)]
-        uppercase: bool,
-        #[arg(long)]
-        digits: bool,
-        #[arg(long)]
-        symbols: bool,
-        #[arg(long)]
-        chinese: bool,
+    /// Generate random password or passphrase
+    Generate(GenerateArgs),
+}
 
-        #[arg(long)]
-        passphrase: bool,
-        #[arg(long)]
-        wordlist: Option<String>,
-
-        #[arg(long, conflicts_with = "env")]
-        clipboard: bool,
-        #[arg(long, conflicts_with = "clipboard")]
-        env: Option<String>,
-
-        #[arg(long, num_args = 2, value_names = ["DOMAIN", "ACCOUNT"])]
-        save: Option<Vec<String>>,
-
-        #[arg(long)]
-        exclude_similar: bool,
+#[derive(Subcommand)]
+pub enum UpdateSub {
+    /// Update credential password
+    Password {
+        /// Credential key as domain:account
+        target: String,
     },
 }
 
-impl Cli {
-    pub fn tier(&self) -> Tier {
-        if self.confidential {
-            Tier::Confidential
-        } else if self.top_secret {
-            Tier::TopSecret
-        } else {
-            Tier::Secret
-        }
-    }
-}
+#[derive(clap::Args, Clone)]
+pub struct GenerateArgs {
+    /// Password length (default: 16) or passphrase word count (default: 4)
+    #[arg(short = 'l', long, default_value = "16")]
+    pub length: usize,
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier {
-    Secret,
-    Confidential,
-    TopSecret,
-}
+    /// Generate a memorable passphrase instead of random characters
+    #[arg(long)]
+    pub passphrase: bool,
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Operation {
-    Add,
-    Get,
-    List,
-    Delete,
-    Update,
-    Init,
-    Serve,
-    Unlock,
-    Lock,
-    Stop,
-    Generate,
-}
+    /// Custom wordlist file for passphrase generation
+    #[arg(long)]
+    pub wordlist: Option<String>,
 
-impl Command {
-    pub fn to_operation(&self) -> Operation {
-        match self {
-            Command::Add { .. } => Operation::Add,
-            Command::Get { .. } => Operation::Get,
-            Command::List { .. } => Operation::List,
-            Command::Delete { .. } => Operation::Delete,
-            Command::Update { .. } => Operation::Update,
-            Command::Init { .. } => Operation::Init,
-            Command::Serve => Operation::Serve,
-            Command::Unlock => Operation::Unlock,
-            Command::Lock => Operation::Lock,
-            Command::Stop => Operation::Stop,
-            Command::Generate { .. } => Operation::Generate,
-        }
-    }
-}
+    /// Include lowercase letters
+    #[arg(long)]
+    pub lowercase: bool,
+    /// Include uppercase letters
+    #[arg(long)]
+    pub uppercase: bool,
+    /// Include digits
+    #[arg(long)]
+    pub digits: bool,
+    /// Include symbols
+    #[arg(long)]
+    pub symbols: bool,
+    /// Include CJK characters
+    #[arg(long)]
+    pub chinese: bool,
+    /// Exclude ambiguous characters (0, O, I, l, 1)
+    #[arg(long)]
+    pub exclude_similar: bool,
 
-pub fn validate_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("Name cannot be empty".into());
-    }
-    for ch in name.chars() {
-        if !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' {
-            return Err(format!(
-                "Invalid character '{}' in name. Only a-z, A-Z, 0-9, -, _ allowed.",
-                ch
-            ));
-        }
-    }
-    Ok(())
+    /// Copy to clipboard
+    #[arg(short = 'c', long)]
+    pub clipboard: bool,
+
+    /// Inject into env var
+    #[arg(short = 'e', long)]
+    pub env: Option<String>,
+
+    /// Save as credential: domain:account
+    #[arg(long)]
+    pub save: Option<String>,
+
+    /// Description (only with --save)
+    #[arg(long)]
+    pub description: Option<String>,
+
+    /// Comma-separated tags (only with --save)
+    #[arg(long, value_delimiter = ',')]
+    pub tags: Vec<String>,
+
+    /// Crypt level for saved credential (default: secret)
+    #[arg(long)]
+    pub level: Option<String>,
 }
