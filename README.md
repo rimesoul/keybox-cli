@@ -21,8 +21,8 @@ Three crypt levels determine how the inner age private key is protected:
 | Level | ROT | How Private Key Is Protected |
 |-------|-----|------------------------------|
 | **secret** (default) | Machine access | System protector (Keychain / DPAPI / machine-id) — auto-decrypt |
-| **con** (confidential) | Human memory | Master passphrase via age scrypt |
-| **top** (top-secret) | Physical medium | Key file content SHA-256 → AES-256-GCM |
+| **confidential** (`con`) | Human memory | Master passphrase via age scrypt |
+| **top-secret** (`top`) | Physical medium | Key file content SHA-256 → AES-256-GCM |
 
 - Encryption (adding credentials) only needs the **public key** — never requires passphrase or key file
 - Decryption (getting passwords) requires unlocking the **private key** via the level's ROT
@@ -47,18 +47,18 @@ cargo build --release
 ## Quick Start
 
 ```bash
-# Initialize (secret level auto-initializes; con/top are optional)
+# Initialize (secret level auto-initializes; confidential/top-secret are optional)
 keybox init
 
 # Add credentials
 keybox add github.com:brian           # prompts for token, saves at secret level
-keybox add aws:admin --level con      # saves at confidential level
+keybox add aws:admin --level confidential      # saves at confidential level
 keybox add :my-root --tags "default"  # default domain (omitted domain)
 
 # Get credentials
 # Default: shows warning, requires --clipboard/--env/--force
 keybox get password -u github.com:brian --clipboard   # copy to clipboard
-keybox get password -u aws:admin --clipboard          # prompts for passphrase (con level)
+keybox get password -u aws:admin --clipboard          # prompts for passphrase (confidential level)
 keybox get password -u github.com:brian --force       # force display to stdout
 keybox get password -u github.com:brian --env GITHUB_TOKEN  # inject as env var
 keybox get description -u github.com:brian            # prints metadata (no decrypt needed)
@@ -103,16 +103,16 @@ keybox [--base <dir>] <command> [args...]
 | `--clipboard, -c` | Copy password to clipboard |
 | `--env, -e <VAR>` or `-e <VAR1:VAR2>` | Inject as env var(s) |
 | `--force, -f` | Force display password to stdout |
-| `--access-token <token>` | Use daemon token (con/top, non-interactive) |
+| `--access-token <token>` | Use daemon token (confidential/top-secret, non-interactive) |
 
 ### Crypt Levels
 
 Levels are specified per-command via `--level`, not as global flags:
 
 ```bash
-keybox init --level con              # initialize confidential level
-keybox add aws:root --level top      # add at top-secret level
-keybox unlock --level con,top        # unlock multiple levels
+keybox init --level confidential              # initialize confidential level
+keybox add aws:root --level top-secret     # add at top-secret level
+keybox unlock --level confidential          # unlock confidential level
 ```
 
 Default level is `secret` when not specified. The `:account` shorthand uses
@@ -120,15 +120,15 @@ Default level is `secret` when not specified. The `:account` shorthand uses
 
 ## Daemon & Token Access
 
-The daemon (`keybox serve`) holds the keystore in memory. For con/top levels,
+The daemon (`keybox serve`) holds the keystore in memory. For confidential/top-secret levels,
 unlock generates a time-limited access token:
 
 ```bash
 # Start daemon
 keybox serve
 
-# Unlock con level (prompts for passphrase), get a 30-min token
-keybox unlock --level con --timeout 30
+# Unlock confidential level (prompts for passphrase), get a 30-min token
+keybox unlock --level confidential --timeout 30
 # → Token: dGhpcyBpcyBhIHRva2Vu...
 
 # Use token for non-interactive access

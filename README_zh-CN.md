@@ -16,8 +16,8 @@
 | 等级 | 安全根基 | 私钥保护方式 |
 |------|---------|-------------|
 | **secret**（默认） | 机器物理访问 | 系统保护器（Keychain / DPAPI / machine-id）— 自动解密 |
-| **con**（机密） | 人脑记忆 | 主密码通过 age scrypt 保护 |
-| **top**（绝密） | 物理介质持有 | 密钥文件内容 SHA-256 → AES-256-GCM |
+| **confidential**（机密，`con`） | 人脑记忆 | 主密码通过 age scrypt 保护 |
+| **top-secret**（绝密，`top`） | 物理介质持有 | 密钥文件内容 SHA-256 → AES-256-GCM |
 
 - **加密**（添加凭据）只需公钥 — 永远不需要输入密码或密钥文件
 - **解密**（获取密码）需要通过对应等级的安全根基解锁私钥
@@ -42,17 +42,17 @@ cargo build --release
 ## 快速开始
 
 ```bash
-# 初始化（secret 等级自动初始化，con/top 可选）
+# 初始化（secret 等级自动初始化，confidential/top-secret 可选）
 keybox init
 
 # 添加凭据
 keybox add github.com:brian           # 交互式输入 token，默认 secret 等级
-keybox add aws:admin --level con      # 存储在机密等级
+keybox add aws:admin --level confidential      # 存储在机密等级
 keybox add :my-root --tags "default"  # 省略 domain 使用默认值
 
 # 获取凭据（默认显示警告，需指定 --clipboard/--env/--force）
 keybox get password -u github.com:brian --clipboard   # 复制到剪贴板（secret 自动解密）
-keybox get password -u aws:admin --clipboard          # 提示输入主密码（con 等级）
+keybox get password -u aws:admin --clipboard          # 提示输入主密码（confidential 等级）
 keybox get password -u github.com:brian --force       # 强制明文输出
 keybox get password -u github.com:brian --env GITHUB_TOKEN  # 注入环境变量
 keybox get description -u github.com:brian            # 输出元数据（无需解密）
@@ -76,7 +76,7 @@ keybox [--base <dir>] <command> [args...]
 
 | 命令 | 说明 |
 |------|------|
-| `init [--level <secret\|con\|top>]` | 初始化凭据库和/或加密等级 |
+| `init [--level <secret\|confidential\|top-secret>]` | 初始化凭据库和/或加密等级 |
 | `add <domain:account> [--level] [--description] [--tags]` | 添加凭据（默认 secret 等级） |
 | `get [field] -u <domain:account>` | 获取字段：password、description、tags、metadata、all |
 | `list [--fmt json\|table] [--level] [--tag]` | 列出凭据（默认 JSON，密码显示为 `<masked>`） |
@@ -85,7 +85,7 @@ keybox [--base <dir>] <command> [args...]
 | `delete <domain:account>` | 删除凭据 |
 | `gen [--length] [--passphrase] [--save]` | 生成随机密码/助记短语 |
 | `serve` | 启动后台守护进程 |
-| `unlock --level <con\|top> [--timeout]` | 解锁守护进程，获取访问令牌 |
+| `unlock --level <confidential\|top-secret> [--timeout]` | 解锁守护进程，获取访问令牌 |
 | `lock` | 锁定守护进程（吊销所有令牌） |
 | `stop` | 停止守护进程 |
 
@@ -97,30 +97,30 @@ keybox [--base <dir>] <command> [args...]
 | `--clipboard, -c` | 复制密码到剪贴板 |
 | `--env, -e <VAR>` 或 `-e <VAR1:VAR2>` | 注入为环境变量 |
 | `--force, -f` | 强制输出密码明文到 stdout |
-| `--access-token <token>` | 使用守护进程令牌（con/top，非交互） |
+| `--access-token <token>` | 使用守护进程令牌（confidential/top-secret，非交互） |
 
 ### 加密等级
 
 等级通过 `--level` 在每个命令中指定，不再是全局 flag：
 
 ```bash
-keybox init --level con              # 初始化机密等级
-keybox add aws:root --level top      # 以绝密等级添加
-keybox unlock --level con,top        # 同时解锁多个等级
+keybox init --level confidential              # 初始化机密等级
+keybox add aws:root --level top-secret      # 以绝密等级添加
+keybox unlock --level confidential          # 解锁机密等级
 ```
 
 未指定时默认为 `secret`。`:account` 简写形式使用 `default` 作为域名。
 
 ## 守护进程与令牌访问
 
-守护进程（`keybox serve`）将凭据库保持在内存中。对于 con/top 等级，解锁后会生成有时限的访问令牌：
+守护进程（`keybox serve`）将凭据库保持在内存中。对于 confidential/top-secret 等级，解锁后会生成有时限的访问令牌：
 
 ```bash
 # 启动守护进程
 keybox serve
 
-# 解锁 con 等级（提示输入主密码），获取 30 分钟有效令牌
-keybox unlock --level con --timeout 30
+# 解锁 confidential 等级（提示输入主密码），获取 30 分钟有效令牌
+keybox unlock --level confidential --timeout 30
 # → Token: dGhpcyBpcyBhIHRva2Vu...
 
 # 使用令牌进行非交互访问
@@ -178,7 +178,7 @@ keybox get password -u aws:admin --no-interactive --clipboard \
 - `id`、`domain`、`account` — 标识符
 - `description`、`tags` — LLM 友好的元数据
 - `created_at`、`updated_at`、`last_access_at` — 时间戳
-- `crypt_level` — secret / con / top
+- `crypt_level` — secret / confidential / top-secret
 - `secret` — age 加密的凭据值（base64）
 
 ## 平台差异
