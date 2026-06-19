@@ -12,6 +12,22 @@ cargo clippy --all-targets -- -D warnings
 - Release is triggered by pushing a `v*` tag (e.g., `v0.2.0`); builds for linux-x86_64, macos-arm64, windows-x86_64
 - Single binary crate — `cargo build --release` produces `target/release/keybox`
 
+### Release Checklist
+
+**Before pushing a `v*` tag, you MUST update `Cargo.toml`:**
+
+```toml
+[package]
+version = "0.2.0"   # ← bump this first, then tag
+```
+
+```bash
+# Correct order:
+1. Update version in Cargo.toml and commit
+2. git tag v0.2.0
+3. git push origin main --tags
+```
+
 ## Project Structure
 
 ```
@@ -54,6 +70,40 @@ This project uses the Superpowers methodology. Before touching code for any feat
 4. **subagent-driven-development** → TDD implementation with two-stage review
 
 Design docs in `docs/superpowers/specs/`, plans in `docs/superpowers/plans/`. Do NOT skip directly to code.
+
+## Behavioral Guidelines
+
+Adapted from [andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills). These bias toward caution — use judgment for trivial tasks.
+
+### Think Before Coding
+
+- State assumptions explicitly before implementing. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop, name what's confusing, and ask.
+
+### Simplicity First
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- If you write 200 lines and it could be 50, rewrite it.
+
+### Surgical Changes
+
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- Remove imports/variables that YOUR changes made unused — don't clean pre-existing dead code unless asked.
+- Every changed line should trace directly to the user's request.
+
+### Goal-Driven Execution
+
+- Transform tasks into verifiable goals: "Add validation" → "Write tests for invalid inputs, then make them pass."
+- For multi-step tasks, state a brief plan with verify checkpoints.
+- Loop until verified — weak criteria ("make it work") require constant clarification.
+
+---
 
 ## Notable Conventions
 
