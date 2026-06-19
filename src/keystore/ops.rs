@@ -92,6 +92,7 @@ pub fn init_store(path: &Path) -> Result<[u8; 32], String> {
 
 /// Add a credential to the keystore. Encrypts the secret with age using
 /// the crypt_level's public key (recipient). Returns the credential ID.
+#[allow(clippy::too_many_arguments)]
 pub fn add_credential(
     path: &Path,
     aes_key: &[u8],
