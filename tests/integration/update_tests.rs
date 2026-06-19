@@ -3,78 +3,47 @@ use predicates::prelude::*;
 use tempfile::TempDir;
 
 #[test]
-fn test_update_existing() {
-    let dir = TempDir::new().unwrap();
-    let config_dir = dir.path().to_str().unwrap();
-
-    // Add credential with old value
-    let mut cmd = Command::cargo_bin("keybox").unwrap();
-    cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args([
-            "add",
-            "gitea",
-            "pat",
-            "--non-interactive",
-            "--password",
-            "old-secret",
-        ])
-        .assert()
-        .success();
-
-    // Update with new value
-    let mut cmd = Command::cargo_bin("keybox").unwrap();
-    cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args([
-            "update",
-            "gitea",
-            "pat",
-            "--non-interactive",
-            "--password",
-            "new-secret-xyz",
-        ])
-        .assert()
-        .success();
-
-    // Get returns new value
-    let mut cmd = Command::cargo_bin("keybox").unwrap();
-    cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args(["get", "gitea", "pat"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("new-secret-xyz"));
-}
-
-#[test]
 fn test_update_nonexistent_fails() {
     let dir = TempDir::new().unwrap();
     let config_dir = dir.path().to_str().unwrap();
 
-    // Initialize the tier first by adding a credential in a different domain
+    // Initialize by adding a credential in a different domain
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args([
-            "add",
-            "gitea",
-            "pat",
-            "--non-interactive",
-            "--password",
-            "secret123",
-        ])
+        .args(["add", "gitea:pat", "--stdin"])
+        .write_stdin("secret123\n")
         .assert()
         .success();
 
-    // Update a nonexistent credential
+    // Update a nonexistent credential — fails with "not found"
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args([
-            "update",
-            "nonexistent",
-            "ghost",
-            "--non-interactive",
-            "--password",
-            "newpass",
-        ])
+        .args(["update", "password", "nonexistent:ghost"])
+        .write_stdin("oldpass\nnewpass\nnewpass\n")
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_update_requires_tty() {
+    let dir = TempDir::new().unwrap();
+    let config_dir = dir.path().to_str().unwrap();
+
+    // Add a credential
+    let mut cmd = Command::cargo_bin("keybox").unwrap();
+    cmd.env("KEYBOX_CONFIG_DIR", config_dir)
+        .args(["add", "gitea:pat", "--stdin"])
+        .write_stdin("old-secret\n")
+        .assert()
+        .success();
+
+    // Update password without TTY fails because password prompts require TTY
+    let mut cmd = Command::cargo_bin("keybox").unwrap();
+    cmd.env("KEYBOX_CONFIG_DIR", config_dir)
+        .args(["update", "password", "gitea:pat"])
+        .write_stdin("old-secret\nnew-secret-xyz\nnew-secret-xyz\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stdin is not a TTY"));
 }

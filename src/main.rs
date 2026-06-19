@@ -2,121 +2,124 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
-#[cfg(target_os = "macos")]
 use std::str::FromStr;
 
 use clap::Parser;
-use keybox::cli::{Cli, Command, validate_name};
-use keybox::crypto::identity;
-use keybox::daemon;
-use keybox::daemon::protocol::Request;
-use keybox::env_run;
+use age::secrecy::ExposeSecret;
+use keybox::cli::{Cli, Command, GenerateArgs, UpdateSub};
+use keybox::crypto::age_ops;
 use keybox::generate;
 use keybox::interactive;
-use keybox::store;
-use keybox::tier::{Tier, TierPaths};
+use keybox::keystore::ops;
+use keybox::keystore::schema::{CryptLevel, KeyPair, KeyStore};
+use keybox::protect::IdentityProtector;
 
-// ── Configuration ────────────────────────────────────────────────
+#[cfg(target_os = "macos")]
+use keybox::protect::MacOSProtector;
 
-/// Resolve the base config directory, preferring the `KEYBOX_CONFIG_DIR`
-/// environment variable when set (useful for tests).
-fn config_dir() -> PathBuf {
+// ── Helpers: resolve_base, parse_target, keystore paths ─────────────
+
+fn resolve_base(base_opt: Option<&str>) -> Result<PathBuf, String> {
     if let Ok(dir) = std::env::var("KEYBOX_CONFIG_DIR") {
-        PathBuf::from(dir)
+        return Ok(PathBuf::from(dir));
+    }
+    if let Some(b) = base_opt {
+        Ok(PathBuf::from(b))
     } else {
-        dirs::config_dir()
-            .expect("Could not determine config directory")
-            .join("keybox")
+        Ok(dirs::config_dir()
+            .ok_or("Cannot determine config directory")?
+            .join("keybox"))
     }
 }
 
-/// Capture command-line arguments appearing after the `--` separator.
-fn get_trailing_args() -> Vec<String> {
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(pos) = args.iter().position(|a| a == "--") {
-        args[pos + 1..].to_vec()
-    } else {
-        vec![]
+fn parse_target(target: &str) -> (&str, &str) {
+    match target.split_once(':') {
+        Some((domain, account)) if !domain.is_empty() => (domain, account),
+        Some((_, account)) => ("default", account),
+        None => ("default", target),
     }
 }
 
-// ── Initialization helpers ───────────────────────────────────────
+fn get_keystore_path(base: &Path) -> PathBuf {
+    ops::keystore_path(base)
+}
 
-/// Ensure the given tier is initialised.  The Secret tier is implicitly
-/// auto-initialised on macOS; other tiers require an explicit `init`.
-fn ensure_initialized(base: &Path, tier: Tier) -> Result<(), String> {
-    if tier.is_initialized(base) {
-        return Ok(());
+fn aes_key_path(base: &Path) -> PathBuf {
+    base.join("secret").join("aes.key")
+}
+
+// ── Helpers: base64 ─────────────────────────────────────────────────
+
+fn b64_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|e| format!("Base64 decode: {}", e))
+}
+
+// ── Helpers: AES key persistence (platform-protected) ───────────────
+
+fn store_aes_key(base: &Path, key: &[u8; 32]) -> Result<(), String> {
+    let path = aes_key_path(base);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
     }
-    match tier {
-        Tier::Secret => auto_init_secret(base),
-        Tier::Confidential | Tier::TopSecret => {
-            let flag = match tier {
-                Tier::Confidential => "--confidential",
-                Tier::TopSecret => "--top-secret",
-                _ => unreachable!(),
-            };
-            Err(format!(
-                "{} tier not initialized. Run `keybox {} init` first.",
-                tier.dir_name(),
-                flag
-            ))
-        }
+    store_with_protector(base, key, &path)
+}
+
+fn load_aes_key(base: &Path) -> Result<[u8; 32], String> {
+    let path = aes_key_path(base);
+    if !path.exists() {
+        return Err("Keystore not initialized. Run 'keybox init' first.".into());
     }
+    let bytes = load_with_protector(base, &path)?;
+    if bytes.len() != 32 {
+        return Err("AES key has wrong length".into());
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    Ok(key)
+}
+
+// ── Platform-specific protect/unprotect ─────────────────────────────
+
+#[cfg(target_os = "macos")]
+fn store_with_protector(_base: &Path, data: &[u8], path: &Path) -> Result<(), String> {
+    let protector = MacOSProtector::new();
+    protector.protect(data, path)
 }
 
 #[cfg(target_os = "macos")]
-fn auto_init_secret(base: &Path) -> Result<(), String> {
-    use age::secrecy::ExposeSecret;
-    use keybox::protect::{IdentityProtector, MacOSProtector};
-
-    let paths = TierPaths::from_base(base, Tier::Secret);
-    std::fs::create_dir_all(&paths.store)
-        .map_err(|e| format!("Failed to create store dir: {}", e))?;
-    if let Some(parent) = paths.private_key.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create identity dir: {}", e))?;
-    }
-
-    let (ident, recipient) = identity::generate();
+fn load_with_protector(_base: &Path, path: &Path) -> Result<Vec<u8>, String> {
     let protector = MacOSProtector::new();
-    let id_str = ident.to_string();
-    protector.protect(id_str.expose_secret().as_bytes(), &paths.private_key)?;
-    identity::save_recipient(&recipient, &paths.public_key)?;
-    Ok(())
+    protector.unprotect(path)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn auto_init_secret(base: &Path) -> Result<(), String> {
-    let paths = TierPaths::from_base(base, Tier::Secret);
-    std::fs::create_dir_all(&paths.store)
-        .map_err(|e| format!("Failed to create store dir: {}", e))?;
-    if let Some(parent) = paths.private_key.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create identity dir: {}", e))?;
+fn store_with_protector(_base: &Path, data: &[u8], path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
     }
-    let (ident, recipient) = identity::generate();
-    identity::save_identity(&ident, &paths.private_key)?;
-    identity::save_recipient(&recipient, &paths.public_key)?;
-    Ok(())
+    fs::write(path, data).map_err(|e| format!("Failed to write: {}", e))
 }
 
-// ── Identity loading for the Secret tier on macOS ────────────────
-
-#[cfg(target_os = "macos")]
-fn load_secret_identity(base: &Path) -> Result<age::x25519::Identity, String> {
-    use keybox::protect::{IdentityProtector, MacOSProtector};
-
-    let paths = TierPaths::from_base(base, Tier::Secret);
-    let protector = MacOSProtector::new();
-    let identity_bytes = protector.unprotect(&paths.private_key)?;
-    let identity_str = String::from_utf8(identity_bytes)
-        .map_err(|_| "Identity contains invalid UTF-8".to_string())?;
-    age::x25519::Identity::from_str(identity_str.trim())
-        .map_err(|e| format!("Failed to parse identity: {}", e))
+#[cfg(not(target_os = "macos"))]
+fn load_with_protector(_base: &Path, path: &Path) -> Result<Vec<u8>, String> {
+    fs::read(path).map_err(|e| format!("Failed to read: {}", e))
 }
 
-// ── Clipboard ────────────────────────────────────────────────────
+// ── Helper: parse crypt level string ────────────────────────────────
+
+fn parse_level(s: Option<&str>) -> CryptLevel {
+    s.and_then(|l| CryptLevel::from_str(l).ok()).unwrap_or(CryptLevel::Secret)
+}
+
+// ── Helper: copy to clipboard ───────────────────────────────────────
 
 fn copy_to_clipboard(secret: &[u8]) -> Result<(), String> {
     let text = std::str::from_utf8(secret)
@@ -129,132 +132,629 @@ fn copy_to_clipboard(secret: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-// ── CLI handle functions ─────────────────────────────────────────
+fn get_trailing_args() -> Vec<String> {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pos) = args.iter().position(|a| a == "--") {
+        args[pos + 1..].to_vec()
+    } else {
+        vec![]
+    }
+}
+
+// ── Passphrase-based encryption (for con level) ─────────────────────
+
+fn encrypt_with_passphrase(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
+    use age::Encryptor;
+    let encryptor =
+        Encryptor::with_user_passphrase(age::secrecy::Secret::new(passphrase.to_string()));
+    let mut encrypted = vec![];
+    let mut writer = encryptor
+        .wrap_output(&mut encrypted)
+        .map_err(|_| "Encryption failed".to_string())?;
+    io::Write::write_all(&mut writer, plaintext).map_err(|_| "Write failed".to_string())?;
+    writer.finish().map_err(|_| "Finish failed".to_string())?;
+    Ok(encrypted)
+}
+
+fn decrypt_with_passphrase(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
+    use age::Decryptor;
+    let decryptor =
+        Decryptor::new(encrypted).map_err(|e| format!("Age decrypt: {}", e))?;
+    let decryptor = match decryptor {
+        Decryptor::Passphrase(d) => d,
+        _ => return Err("Not a passphrase-encrypted file".into()),
+    };
+    let mut reader = decryptor
+        .decrypt(&age::secrecy::Secret::new(passphrase.to_string()), None)
+        .map_err(|_| "Wrong passphrase".to_string())?;
+    let mut plaintext = vec![];
+    std::io::Read::read_to_end(&mut reader, &mut plaintext)
+        .map_err(|e| format!("Read: {}", e))?;
+    Ok(plaintext)
+}
+
+// ── Keyfile-based AES-GCM encryption (for top level) ────────────────
+
+fn derive_key_from_file(file_content: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"keybox-top-v1");
+    hasher.update(file_content);
+    let hash = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&hash);
+    key
+}
+
+fn encrypt_with_aes_gcm_keyfile(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+    use ring::rand::{SecureRandom, SystemRandom};
+    const NONCE_LEN: usize = 12;
+
+    let rng = SystemRandom::new();
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rng.fill(&mut nonce_bytes)
+        .map_err(|_| "CSPRNG failure".to_string())?;
+
+    let unbound =
+        UnboundKey::new(&AES_256_GCM, key).map_err(|e| format!("Bad key: {}", e))?;
+    let lk = LessSafeKey::new(unbound);
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+
+    let mut in_out = plaintext.to_vec();
+    lk.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+
+    let mut output = nonce_bytes.to_vec();
+    output.extend_from_slice(&in_out);
+    Ok(output)
+}
+
+fn decrypt_with_aes_gcm_keyfile(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+    const NONCE_LEN: usize = 12;
+
+    if encrypted.len() < NONCE_LEN + 16 {
+        return Err("Ciphertext too short".into());
+    }
+    let unbound =
+        UnboundKey::new(&AES_256_GCM, key).map_err(|e| format!("Bad key: {}", e))?;
+    let lk = LessSafeKey::new(unbound);
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    nonce_bytes.copy_from_slice(&encrypted[..NONCE_LEN]);
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    let mut in_out = encrypted[NONCE_LEN..].to_vec();
+    lk.open_in_place(nonce, Aad::empty(), &mut in_out)
+        .map_err(|_| "Decryption failed — wrong key or corrupted data".to_string())?;
+    Ok(in_out)
+}
+
+// ── Keypair initialization ──────────────────────────────────────────
+
+/// Generate and store a keypair for the given crypt level.
+fn init_keypair(
+    store: &mut KeyStore,
+    base: &Path,
+    level: &CryptLevel,
+    passphrase: Option<&str>,
+    key_file: Option<&str>,
+) -> Result<(), String> {
+    let level_str = level.as_str();
+
+    if store.key_pairs.contains_key(level_str) {
+        return Ok(()); // already initialized
+    }
+
+    let (identity, recipient) = age_ops::generate_keypair();
+    let identity_str = identity.to_string();
+    let identity_bytes = identity_str.expose_secret().as_bytes();
+
+    let (encrypted_private_key, protector_name) = match level {
+        CryptLevel::Secret => {
+            #[cfg(target_os = "macos")]
+            {
+                let protector = MacOSProtector::new();
+                let marker = base.join("secret").join("id.marker");
+                if let Some(parent) = marker.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("Failed to create dir: {}", e))?;
+                }
+                // Use direct protect/unprotect (not protect_to_bytes) so the
+                // Keychain account name matches between store and load.
+                protector.protect(identity_bytes, &marker)?;
+                // The marker content is just a constant; we store an empty
+                // encrypted_private_key since the identity lives in Keychain.
+                ("".to_string(), "macos".to_string())
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let id_path = base.join("secret").join("identity");
+                if let Some(parent) = id_path.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("Failed to create dir: {}", e))?;
+                }
+                fs::write(&id_path, identity_bytes)
+                    .map_err(|e| format!("Failed to write: {}", e))?;
+                (String::new(), "file".to_string())
+            }
+        }
+        CryptLevel::Con => {
+            let pass = passphrase.ok_or("Passphrase required for confidential tier")?;
+            let encrypted = encrypt_with_passphrase(identity_bytes, pass)?;
+            (b64_encode(&encrypted), "passphrase".to_string())
+        }
+        CryptLevel::Top => {
+            let key_path = key_file.ok_or("Key file required for top-secret tier")?;
+            let file_content = fs::read(key_path)
+                .map_err(|e| format!("Failed to read key file '{}': {}", key_path, e))?;
+            if file_content.is_empty() {
+                return Err("Key file is empty".into());
+            }
+            let aes_key = derive_key_from_file(&file_content);
+            let encrypted = encrypt_with_aes_gcm_keyfile(identity_bytes, &aes_key)?;
+            (b64_encode(&encrypted), "keyfile".to_string())
+        }
+    };
+
+    store.key_pairs.insert(
+        level_str.to_string(),
+        KeyPair {
+            public_key: recipient.to_string(),
+            encrypted_private_key,
+            protector: protector_name,
+        },
+    );
+
+    Ok(())
+}
+
+// ── Identity resolution (decrypt private key for a level) ───────────
+
+fn resolve_identity(
+    base: &Path,
+    aes_key: &[u8],
+    level: &str,
+) -> Result<age::x25519::Identity, String> {
+    let kp = get_keystore_path(base);
+    let store = ops::load_store(&kp, aes_key)?;
+    let keypair = store
+        .key_pairs
+        .get(level)
+        .ok_or_else(|| format!("Level '{}' not initialized. Run 'keybox init --level {}' first.", level, level))?;
+
+    let identity_str: String = match keypair.protector.as_str() {
+        "macos" | "secret" => {
+            #[cfg(target_os = "macos")]
+            {
+                let protector = MacOSProtector::new();
+                let marker = base.join("secret").join("id.marker");
+                // Use direct unprotect (not unprotect_from_bytes) to match
+                // the direct protect call used during init.
+                let identity_bytes = protector.unprotect(&marker)?;
+                String::from_utf8(identity_bytes)
+                    .map_err(|_| "Identity not valid UTF-8".to_string())?
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let id_path = base.join("secret").join("identity");
+                let identity_bytes = fs::read(&id_path)
+                    .map_err(|e| format!("Failed to read identity: {}", e))?;
+                String::from_utf8(identity_bytes)
+                    .map_err(|_| "Identity not valid UTF-8".to_string())?
+            }
+        }
+        "passphrase" | "con" => {
+            let passphrase =
+                interactive::prompt_password("Enter master passphrase for confidential tier: ")?;
+            let encrypted = b64_decode(&keypair.encrypted_private_key)?;
+            let identity_bytes = decrypt_with_passphrase(&encrypted, &passphrase)?;
+            String::from_utf8(identity_bytes)
+                .map_err(|_| "Identity not valid UTF-8".to_string())?
+        }
+        "keyfile" | "top" => {
+            let key_path_input =
+                interactive::prompt_input("Key file path for top-secret tier: ")?;
+            let file_content = fs::read(&key_path_input)
+                .map_err(|e| format!("Failed to read key file '{}': {}", key_path_input, e))?;
+            if file_content.is_empty() {
+                return Err("Key file is empty".into());
+            }
+            let aes_key_top = derive_key_from_file(&file_content);
+            let encrypted = b64_decode(&keypair.encrypted_private_key)?;
+            let identity_bytes =
+                decrypt_with_aes_gcm_keyfile(&encrypted, &aes_key_top)?;
+            String::from_utf8(identity_bytes)
+                .map_err(|_| "Identity not valid UTF-8".to_string())?
+        }
+        _ => return Err(format!("Unknown protector: {}", keypair.protector)),
+    };
+
+    age::x25519::Identity::from_str(identity_str.trim())
+        .map_err(|e| format!("Failed to parse identity: {}", e))
+}
+
+// ── Open keystore (auto-create with secret tier if missing) ─────────
+
+fn open_keystore(base: &Path) -> Result<([u8; 32], PathBuf), String> {
+    let kp = get_keystore_path(base);
+    if !kp.exists() {
+        eprintln!("Initializing keystore...");
+        let aes_key = ops::init_store(&kp)?;
+        store_aes_key(base, &aes_key)?;
+
+        let mut store = ops::load_store(&kp, &aes_key)?;
+        init_keypair(&mut store, base, &CryptLevel::Secret, None, None)?;
+        ops::save_store(&kp, &store, &aes_key)?;
+        eprintln!("Keystore initialized with secret tier.");
+        return Ok((aes_key, kp));
+    }
+    let aes_key = load_aes_key(base)?;
+    Ok((aes_key, kp))
+}
+
+// ── Ensure a crypt level is initialized (auto-init secret only) ─────
+
+fn ensure_level(
+    base: &Path,
+    kp: &Path,
+    aes_key: &[u8],
+    level: &CryptLevel,
+) -> Result<(), String> {
+    let store = ops::load_store(kp, aes_key)?;
+    if store.key_pairs.contains_key(level.as_str()) {
+        return Ok(());
+    }
+    drop(store);
+
+    if *level == CryptLevel::Secret {
+        let mut store = ops::load_store(kp, aes_key)?;
+        init_keypair(&mut store, base, level, None, None)?;
+        ops::save_store(kp, &store, aes_key)?;
+        Ok(())
+    } else {
+        Err(format!(
+            "Level '{}' not initialized. Run 'keybox init --level {}' first.",
+            level.as_str(),
+            level.as_str()
+        ))
+    }
+}
+
+// ── Command Handlers ────────────────────────────────────────────────
+
+fn handle_init(base: &Path, level: Option<&str>) -> Result<(), String> {
+    let kp = get_keystore_path(base);
+
+    if !kp.exists() {
+        // Create keystore fresh with secret tier
+        let aes_key = ops::init_store(&kp)?;
+        store_aes_key(base, &aes_key)?;
+        let mut store = ops::load_store(&kp, &aes_key)?;
+        init_keypair(&mut store, base, &CryptLevel::Secret, None, None)?;
+        ops::save_store(&kp, &store, &aes_key)?;
+        println!("Keystore initialized with secret tier.");
+        // Fall through to check if additional levels need init
+    }
+
+    let aes_key = load_aes_key(base)?;
+    let mut store = ops::load_store(&kp, &aes_key)?;
+    let mut changed = false;
+
+    let levels_to_init: Vec<CryptLevel> = if let Some(l) = level {
+        let cl = CryptLevel::from_str(l).map_err(|e| format!("Invalid level: {}", e))?;
+        if store.key_pairs.contains_key(cl.as_str()) {
+            println!("Level '{}' already initialized.", cl.as_str());
+            return Ok(());
+        }
+        vec![cl]
+    } else {
+        // Init all missing levels
+        [CryptLevel::Secret, CryptLevel::Con, CryptLevel::Top]
+            .iter()
+            .filter(|cl| !store.key_pairs.contains_key(cl.as_str()))
+            .cloned()
+            .collect()
+    };
+
+    for cl in &levels_to_init {
+        match cl {
+            CryptLevel::Secret => {
+                init_keypair(&mut store, base, cl, None, None)?;
+                println!("Initialized secret tier.");
+                changed = true;
+            }
+            CryptLevel::Con => {
+                let passphrase = interactive::prompt_password_with_confirm(
+                    "Enter master passphrase for confidential tier: ",
+                    "Confirm passphrase: ",
+                )?;
+                init_keypair(&mut store, base, cl, Some(&passphrase), None)?;
+                println!("Initialized confidential tier.");
+                changed = true;
+            }
+            CryptLevel::Top => {
+                let key_path =
+                    interactive::prompt_input("Key file path for top-secret tier: ")?;
+                if key_path.is_empty() {
+                    return Err("Key file path is required for top-secret tier".into());
+                }
+                let content = fs::read(&key_path)
+                    .map_err(|e| format!("Failed to read key file: {}", e))?;
+                if content.is_empty() {
+                    return Err("Key file is empty".into());
+                }
+                init_keypair(&mut store, base, cl, None, Some(&key_path))?;
+                println!("Initialized top-secret tier.");
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        ops::save_store(&kp, &store, &aes_key)?;
+    } else if levels_to_init.is_empty() {
+        println!("All levels already initialized.");
+    }
+
+    Ok(())
+}
 
 fn handle_add(
     base: &Path,
-    tier: Tier,
-    domain: &str,
-    account: &str,
-    non_interactive: bool,
-    password: Option<&str>,
+    target: &str,
+    level: Option<&str>,
+    description: Option<&str>,
+    tags: &[String],
+    stdin: bool,
+    no_interactive: bool,
 ) -> Result<(), String> {
-    validate_name(domain)?;
-    validate_name(account)?;
-    ensure_initialized(base, tier)?;
+    let (domain, account) = parse_target(target);
+    let crypt_level = parse_level(level);
 
-    let secret: Vec<u8> = if non_interactive {
-        password
-            .ok_or_else(|| "--password is required with --non-interactive".to_string())?
-            .as_bytes()
-            .to_vec()
+    let (aes_key, kp) = open_keystore(base)?;
+
+    // Ensure the crypt level has a keypair (auto-init secret only)
+    ensure_level(base, &kp, &aes_key, &crypt_level)?;
+
+    // Read secret
+    let secret = if stdin {
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| format!("Failed to read stdin: {}", e))?;
+        input.trim().to_string()
+    } else if no_interactive {
+        return Err("--no-interactive requires --stdin to provide the secret".into());
     } else {
-        interactive::prompt_password_with_confirm("Password: ", "Confirm: ")?
-            .into_bytes()
+        interactive::prompt_password_with_confirm("Secret: ", "Confirm: ")?
     };
 
-    store::add_credential(base, tier, domain, account, &secret)
+    if secret.is_empty() {
+        return Err("Secret cannot be empty".into());
+    }
+
+    let id = ops::add_credential(
+        &kp,
+        &aes_key,
+        domain,
+        account,
+        &secret,
+        &crypt_level,
+        description,
+        tags,
+    )?;
+
+    let key = KeyStore::credential_key(domain, account);
+    eprintln!("Added credential {} (id: {})", key, id);
+    Ok(())
 }
 
 fn handle_get(
     base: &Path,
-    tier: Tier,
-    domain: &str,
-    account: &str,
-    env: Option<&str>,
+    field: Option<&str>,
+    user: &str,
     clipboard: bool,
+    env: Option<&str>,
+    force: bool,
+    access_token: Option<&str>,
+    no_interactive: bool,
 ) -> Result<(), String> {
-    ensure_initialized(base, tier)?;
+    let _ = access_token; // reserved for daemon (Phase 5)
 
-    // On macOS the Secret-tier private key lives in the Keychain, not on disk.
-    #[cfg(target_os = "macos")]
-    let secret = if tier == Tier::Secret {
-        let ident = load_secret_identity(base)?;
-        store::get_credential_with_identity(base, tier, domain, account, &ident)?
+    // When output flags are used, default to getting the password
+    let field = if force || clipboard || env.is_some() {
+        field.unwrap_or("password")
     } else {
-        get_credential_via_daemon(base, tier, domain, account)?
+        field.unwrap_or("all")
     };
 
-    #[cfg(not(target_os = "macos"))]
-    let secret = if tier == Tier::Secret {
-        store::get_credential(base, tier, domain, account)?
-    } else {
-        get_credential_via_daemon(base, tier, domain, account)?
-    };
+    let (domain, account) = parse_target(user);
+    let (aes_key, kp) = open_keystore(base)?;
 
-    if let Some(var_name) = env {
-        let trailing = get_trailing_args();
-        if trailing.is_empty() {
-            // No command after -- : print like normal get.
+    // Always fetch credential metadata first
+    let cred = ops::get_credential(&kp, &aes_key, domain, account)?;
+
+    if field == "all" || field == "metadata" {
+        let output = if field == "metadata" {
+            let mut meta = cred.clone();
+            meta.secret = "<masked>".to_string();
+            meta
+        } else {
+            cred.clone() // secret already masked by ops::get_credential? No, it returns actual
+        };
+
+        // For "all", print JSON with secret masked (don't decrypt)
+        let mut display = output.clone();
+        display.secret = "<masked>".to_string();
+        let json =
+            serde_json::to_string_pretty(&display).map_err(|e| format!("JSON error: {}", e))?;
+        println!("{}", json);
+        return Ok(());
+    }
+
+    if field == "password" {
+        if no_interactive {
+            return Err(
+                "Cannot decrypt password in non-interactive mode. Use --no-interactive only for metadata fields."
+                    .into(),
+            );
+        }
+        let level_str = cred.crypt_level.as_str();
+        let identity = resolve_identity(base, &aes_key, level_str)?;
+        let secret = ops::get_password(&kp, &aes_key, domain, account, &identity)?;
+
+        if let Some(var_name) = env {
+            let trailing = get_trailing_args();
+            if trailing.is_empty() {
+                io::stdout()
+                    .write_all(&secret)
+                    .map_err(|e| e.to_string())?;
+                println!();
+            } else {
+                let code = keybox::env_run::run_with_env(var_name, &secret, &trailing)?;
+                process::exit(code);
+            }
+        } else if clipboard {
+            copy_to_clipboard(&secret)?;
+            eprintln!("Password copied to clipboard.");
+        } else if force {
             io::stdout()
                 .write_all(&secret)
                 .map_err(|e| e.to_string())?;
             println!();
         } else {
-            let code = env_run::run_with_env(var_name, &secret, &trailing)?;
-            process::exit(code);
+            eprintln!(
+                "Use --force to display the password, --clipboard to copy, or --env to inject."
+            );
+            println!("<masked>");
         }
-    } else if clipboard {
-        copy_to_clipboard(&secret)?;
-        eprintln!("Copied to clipboard.");
-    } else {
-        io::stdout()
-            .write_all(&secret)
-            .map_err(|e| e.to_string())?;
-        println!();
+        return Ok(());
+    }
+
+    // Field-level access
+    match field {
+        "description" => println!("{}", cred.description.unwrap_or_default()),
+        "domain" => println!("{}", cred.domain),
+        "account" => println!("{}", cred.account),
+        "tags" => println!("{}", cred.tags.join(", ")),
+        _ => return Err(format!("Unknown field: '{}'", field)),
     }
     Ok(())
 }
 
 fn handle_list(
     base: &Path,
-    tier: Tier,
-    domain: Option<&str>,
-    json: bool,
+    format: &str,
+    level: Option<&str>,
+    tag: Option<&str>,
 ) -> Result<(), String> {
-    // Listing does not require initialisation — just show empty.
-    if !tier.is_initialized(base) {
-        if json {
-            println!("[]");
-        }
-        return Ok(());
-    }
+    let (aes_key, kp) = open_keystore(base)?;
+    let creds = ops::list_credentials(&kp, &aes_key, level, tag)?;
 
-    if let Some(dom) = domain {
-        let accounts = store::list_accounts(base, tier, dom)?;
-        if json {
-            let json_str =
-                serde_json::to_string_pretty(&accounts).map_err(|e| format!("JSON error: {}", e))?;
-            println!("{}", json_str);
-        } else {
-            for a in &accounts {
-                println!("{}", a);
+    match format {
+        "json" => {
+            let json =
+                serde_json::to_string_pretty(&creds).map_err(|e| format!("JSON error: {}", e))?;
+            println!("{}", json);
+        }
+        "table" => {
+            if creds.is_empty() {
+                println!("No credentials found.");
+            } else {
+                for cred in &creds {
+                    println!(
+                        "{}  [{}/{}]  {}",
+                        KeyStore::credential_key(&cred.domain, &cred.account),
+                        cred.crypt_level.as_str(),
+                        &cred.id[..8.min(cred.id.len())],
+                        cred.description.as_deref().unwrap_or("-")
+                    );
+                }
             }
         }
-    } else {
-        let domains = store::list_domains(base, tier)?;
-        if json {
-            let json_str =
-                serde_json::to_string_pretty(&domains).map_err(|e| format!("JSON error: {}", e))?;
-            println!("{}", json_str);
-        } else {
-            for d in &domains {
-                println!("{}", d);
-            }
-        }
+        _ => return Err(format!("Unknown format: '{}'. Use 'json' or 'table'.", format)),
     }
     Ok(())
 }
 
-fn handle_delete(
+fn handle_edit(
     base: &Path,
-    tier: Tier,
-    domain: &str,
-    account: &str,
+    target: &str,
+    description: Option<&str>,
+    tags: &[String],
+    no_interactive: bool,
 ) -> Result<(), String> {
-    ensure_initialized(base, tier)?;
+    let (domain, account) = parse_target(target);
+    let (aes_key, kp) = open_keystore(base)?;
 
-    if interactive::stdin_is_tty() && !interactive::is_llm_calling() {
+    let cred = ops::get_credential(&kp, &aes_key, domain, account)?;
+    let level_str = cred.crypt_level.as_str();
+
+    // For con/top: verify identity before editing
+    if level_str == "con" || level_str == "top" {
+        if no_interactive {
+            return Err(format!(
+                "Editing '{}' level credentials requires interactive access. Cannot use --no-interactive.",
+                level_str
+            ));
+        }
+        let _ = resolve_identity(base, &aes_key, level_str)?;
+    }
+
+    let tags_slice = if tags.is_empty() { None } else { Some(tags) };
+    ops::edit_credential(&kp, &aes_key, domain, account, description, tags_slice)?;
+    println!("Updated {}/{}", domain, account);
+    Ok(())
+}
+
+fn handle_update_password(base: &Path, target: &str) -> Result<(), String> {
+    let (domain, account) = parse_target(target);
+    let (aes_key, kp) = open_keystore(base)?;
+
+    let cred = ops::get_credential(&kp, &aes_key, domain, account)?;
+    let level_str = cred.crypt_level.as_str();
+    let identity = resolve_identity(base, &aes_key, level_str)?;
+
+    let old_password = interactive::prompt_password("Current password: ")?;
+    let new_password =
+        interactive::prompt_password_with_confirm("New password: ", "Confirm: ")?;
+
+    ops::update_password(
+        &kp,
+        &aes_key,
+        domain,
+        account,
+        &old_password,
+        &new_password,
+        &identity,
+    )?;
+    println!("Password updated for {}/{}", domain, account);
+    Ok(())
+}
+
+fn handle_delete(base: &Path, target: &str, no_interactive: bool) -> Result<(), String> {
+    let (domain, account) = parse_target(target);
+    let (aes_key, kp) = open_keystore(base)?;
+
+    let cred = ops::get_credential(&kp, &aes_key, domain, account)?;
+    let level_str = cred.crypt_level.as_str();
+
+    // For con/top: verify identity first
+    if level_str == "con" || level_str == "top" {
+        if no_interactive {
+            return Err(format!(
+                "Deleting '{}' level credentials requires interactive access. Cannot use --no-interactive.",
+                level_str
+            ));
+        }
+        let _ = resolve_identity(base, &aes_key, level_str)?;
+    }
+
+    // Confirm deletion
+    if !no_interactive
+        && interactive::stdin_is_tty()
+        && !interactive::is_llm_calling()
+    {
         let prompt = format!(
             "Delete {}/{}? This cannot be undone",
             domain, account
@@ -265,267 +765,47 @@ fn handle_delete(
         }
     }
 
-    store::delete_credential(base, tier, domain, account)?;
+    ops::delete_credential(&kp, &aes_key, domain, account)?;
     println!("Deleted {}/{}", domain, account);
     Ok(())
 }
 
-fn handle_update(
-    base: &Path,
-    tier: Tier,
-    domain: &str,
-    account: &str,
-    non_interactive: bool,
-    password: Option<&str>,
-) -> Result<(), String> {
-    validate_name(domain)?;
-    validate_name(account)?;
-    ensure_initialized(base, tier)?;
-
-    let secret: Vec<u8> = if non_interactive {
-        password
-            .ok_or_else(|| "--password is required with --non-interactive".to_string())?
-            .as_bytes()
-            .to_vec()
-    } else {
-        interactive::prompt_password_with_confirm("New password: ", "Confirm: ")?
-            .into_bytes()
-    };
-
-    store::update_credential(base, tier, domain, account, &secret)?;
-    println!("Updated {}/{}", domain, account);
+fn handle_serve(_base: &Path) -> Result<(), String> {
+    eprintln!("Daemon support will be implemented in Phase 5.");
+    println!("Daemon started (stub)");
     Ok(())
 }
 
-fn handle_init(
-    base: &Path,
-    tier: Tier,
-    file: Option<&str>,
-    non_interactive: bool,
-    password: Option<&str>,
+fn handle_unlock(
+    _base: &Path,
+    _level: &str,
+    _timeout: u64,
+    _clipboard: bool,
+    _env: Option<&str>,
 ) -> Result<(), String> {
-    match tier {
-        Tier::Secret => auto_init_secret(base),
-        Tier::Confidential => init_confidential(base, non_interactive, password),
-        Tier::TopSecret => init_top_secret(base, file, non_interactive, password),
-    }
-}
-
-fn init_confidential(
-    base: &Path,
-    non_interactive: bool,
-    password: Option<&str>,
-) -> Result<(), String> {
-    use age::secrecy::ExposeSecret;
-    use age::Encryptor;
-
-    let paths = TierPaths::from_base(base, Tier::Confidential);
-    fs::create_dir_all(paths.private_key.parent().unwrap())
-        .map_err(|e| format!("Failed to create dir: {}", e))?;
-    fs::create_dir_all(&paths.store)
-        .map_err(|e| format!("Failed to create store dir: {}", e))?;
-
-    let passphrase = if non_interactive {
-        password
-            .ok_or_else(|| "--password is required with --non-interactive".to_string())?
-            .to_string()
-    } else {
-        interactive::prompt_password_with_confirm(
-            "Enter master passphrase: ",
-            "Confirm passphrase: ",
-        )?
-    };
-
-    let (identity_key, recipient) = identity::generate();
-    let identity_str = identity_key.to_string();
-
-    // Encrypt identity with age passphrase mode
-    let encryptor = Encryptor::with_user_passphrase(age::secrecy::Secret::new(passphrase));
-    let mut encrypted = vec![];
-    let mut writer = encryptor
-        .wrap_output(&mut encrypted)
-        .map_err(|_| "Encryption failed".to_string())?;
-    std::io::Write::write_all(&mut writer, identity_str.expose_secret().as_bytes())
-        .map_err(|_| "Write failed".to_string())?;
-    writer.finish().map_err(|_| "Finish failed".to_string())?;
-
-    fs::write(&paths.private_key, &encrypted)
-        .map_err(|e| format!("Failed to write identity: {}", e))?;
-    identity::save_recipient(&recipient, &paths.public_key)?;
-
-    println!("Initialized confidential tier");
+    eprintln!("Daemon support will be implemented in Phase 5.");
     Ok(())
 }
 
-fn init_top_secret(
-    base: &Path,
-    file: Option<&str>,
-    non_interactive: bool,
-    _password: Option<&str>,
-) -> Result<(), String> {
-    use age::secrecy::ExposeSecret;
-    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
-    use ring::rand::{SecureRandom, SystemRandom};
-    use sha2::{Digest, Sha256};
-
-    let key_path = if let Some(f) = file {
-        PathBuf::from(f)
-    } else if non_interactive {
-        Tier::default_top_key_path(base)
-    } else {
-        let prompt = format!(
-            "Key file path (default: {}): ",
-            Tier::default_top_key_path(base).display()
-        );
-        let input = interactive::prompt_input(&prompt)?;
-        if input.is_empty() {
-            Tier::default_top_key_path(base)
-        } else {
-            PathBuf::from(input)
-        }
-    };
-
-    let file_content = fs::read(&key_path)
-        .map_err(|e| format!("Failed to read key file '{}': {}", key_path.display(), e))?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(b"keybox-top-v1");
-    hasher.update(&file_content);
-    let aes_key = hasher.finalize();
-
-    let paths = TierPaths::from_base(base, Tier::TopSecret);
-    fs::create_dir_all(paths.private_key.parent().unwrap())
-        .map_err(|e| format!("Failed to create dir: {}", e))?;
-    fs::create_dir_all(&paths.store)
-        .map_err(|e| format!("Failed to create store dir: {}", e))?;
-
-    let (identity_key, recipient) = identity::generate();
-    let identity_str = identity_key.to_string();
-
-    // Encrypt with AES-256-GCM
-    let unbound_key =
-        UnboundKey::new(&AES_256_GCM, &aes_key).map_err(|e| format!("Invalid key: {}", e))?;
-    let key = LessSafeKey::new(unbound_key);
-    let rng = SystemRandom::new();
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rng.fill(&mut nonce_bytes)
-        .map_err(|_| "RNG failure".to_string())?;
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-
-    let mut in_out = identity_str.expose_secret().as_bytes().to_vec();
-    key.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
-        .map_err(|e| format!("Encryption failed: {}", e))?;
-
-    let mut output = nonce_bytes.to_vec();
-    output.extend_from_slice(&in_out);
-    fs::write(&paths.private_key, &output)
-        .map_err(|e| format!("Failed to write identity: {}", e))?;
-    identity::save_recipient(&recipient, &paths.public_key)?;
-
-    println!("Initialized top-secret tier");
+fn handle_lock(_base: &Path) -> Result<(), String> {
+    eprintln!("Daemon support will be implemented in Phase 5.");
     Ok(())
 }
 
-fn get_credential_via_daemon(
-    base: &Path,
-    tier: Tier,
-    domain: &str,
-    account: &str,
-) -> Result<Vec<u8>, String> {
-    let paths = TierPaths::from_base(base, tier);
-    let ciphertext = fs::read(paths.store.join(domain).join(format!("{}.enc", account)))
-        .map_err(|e| format!("Failed to read: {}", e))?;
-    let request = Request::Decrypt { ciphertext };
-    match daemon::client::send_request(base, tier, &request)? {
-        keybox::daemon::protocol::Response::Decrypted { plaintext } => Ok(plaintext),
-        keybox::daemon::protocol::Response::Error { message } => Err(message),
-        _ => Err("Unexpected daemon response".into()),
-    }
-}
-
-fn handle_serve(base: &Path, tier: Tier) -> Result<(), String> {
-    if tier == Tier::Secret {
-        return Err("Secret tier does not use a daemon.".into());
-    }
-    if daemon::client::is_daemon_running(base, tier) {
-        println!("Daemon is already running.");
-        return Ok(());
-    }
-    daemon::server::run_daemon(base.to_path_buf(), tier)
-}
-
-fn handle_unlock(base: &Path, tier: Tier) -> Result<(), String> {
-    if tier == Tier::Secret {
-        return Err("Secret tier does not use a daemon.".into());
-    }
-    if !daemon::client::is_daemon_running(base, tier) {
-        return Err("Daemon is not running. Run 'keybox serve' first.".into());
-    }
-    let passphrase = interactive::prompt_password("Enter master passphrase: ")?;
-    let request = Request::Unlock { passphrase };
-    match daemon::client::send_request(base, tier, &request)? {
-        keybox::daemon::protocol::Response::Ok => {
-            println!("Daemon unlocked.");
-            Ok(())
-        }
-        keybox::daemon::protocol::Response::Error { message } => Err(message),
-        _ => Err("Unexpected response".into()),
-    }
-}
-
-fn handle_lock(base: &Path, tier: Tier) -> Result<(), String> {
-    if tier == Tier::Secret {
-        return Err("Secret tier does not use a daemon.".into());
-    }
-    if !daemon::client::is_daemon_running(base, tier) {
-        return Err("Daemon is not running.".into());
-    }
-    let request = Request::Lock;
-    match daemon::client::send_request(base, tier, &request)? {
-        keybox::daemon::protocol::Response::Ok => {
-            println!("Daemon locked.");
-            Ok(())
-        }
-        keybox::daemon::protocol::Response::Error { message } => Err(message),
-        _ => Err("Unexpected response".into()),
-    }
-}
-
-fn handle_stop(base: &Path, tier: Tier) -> Result<(), String> {
-    if tier == Tier::Secret {
-        return Err("Secret tier does not use a daemon.".into());
-    }
-    if !daemon::client::is_daemon_running(base, tier) {
-        return Err("Daemon is not running.".into());
-    }
-    let _ = daemon::client::send_request(base, tier, &Request::Lock);
-    println!("Daemon stopped.");
+fn handle_stop(_base: &Path) -> Result<(), String> {
+    eprintln!("Daemon support will be implemented in Phase 5.");
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn handle_generate(
-    base: &PathBuf,
-    tier: Tier,
-    length: usize,
-    lowercase: bool,
-    uppercase: bool,
-    digits: bool,
-    symbols: bool,
-    chinese: bool,
-    passphrase: bool,
-    wordlist: Option<&str>,
-    clipboard: bool,
-    env_var: Option<&str>,
-    save: Option<&[String]>,
-    exclude_similar: bool,
-) -> Result<(), String> {
-    let password = if passphrase {
-        let words = match wordlist {
+fn handle_generate(base: &Path, args: &GenerateArgs) -> Result<(), String> {
+    // --- Generate the password/passphrase ---
+    let password = if args.passphrase {
+        let words = match &args.wordlist {
             Some(path) => {
                 let content = fs::read_to_string(path)
                     .map_err(|e| format!("wordlist not found: {}", e))?;
-                let w: Vec<String> = content.lines()
+                let w: Vec<String> = content
+                    .lines()
                     .filter(|l| !l.is_empty())
                     .map(|l| l.to_string())
                     .collect();
@@ -536,152 +816,162 @@ fn handle_generate(
             }
             None => generate::load_wordlist(),
         };
-        generate::generate_passphrase(length, &words)
+        generate::generate_passphrase(args.length, &words)
     } else {
-        let has_explicit_charset = lowercase || uppercase || digits || symbols || chinese;
+        let has_explicit_charset =
+            args.lowercase || args.uppercase || args.digits || args.symbols || args.chinese;
         let charset = if has_explicit_charset {
-            if exclude_similar {
-                generate::build_charset_with_exclude_similar(lowercase, uppercase, digits, symbols, chinese)
+            if args.exclude_similar {
+                generate::build_charset_with_exclude_similar(
+                    args.lowercase,
+                    args.uppercase,
+                    args.digits,
+                    args.symbols,
+                    args.chinese,
+                )
             } else {
-                generate::build_charset(lowercase, uppercase, digits, symbols, chinese)
+                generate::build_charset(
+                    args.lowercase,
+                    args.uppercase,
+                    args.digits,
+                    args.symbols,
+                    args.chinese,
+                )
             }
+        } else if args.exclude_similar {
+            generate::build_charset_with_exclude_similar(true, true, true, false, false)
         } else {
-            if exclude_similar {
-                generate::build_charset_with_exclude_similar(true, true, true, false, false)
-            } else {
-                generate::default_charset()
-            }
+            generate::default_charset()
         };
         if charset.is_empty() {
             return Err("at least one character set required".into());
         }
-        generate::generate_password(length, &charset)
+        generate::generate_password(args.length, &charset)
     };
 
     let secret = password.as_bytes();
 
-    let save_cred = |base: &PathBuf, tier: Tier, save: &[String], secret: &[u8]| -> Result<(), String> {
-        let domain = &save[0];
-        let account = &save[1];
-        keybox::cli::validate_name(domain)?;
-        keybox::cli::validate_name(account)?;
-        ensure_initialized(base, tier)?;
-        store::add_credential(base, tier, domain, account, secret)?;
-        Ok(())
-    };
+    // --- If --save, store the credential first ---
+    if let Some(save_target) = &args.save {
+        let (domain, account) = parse_target(save_target);
+        let level = parse_level(args.level.as_deref());
 
-    if let Some(var_name) = env_var {
-        let args: Vec<String> = std::env::args().skip_while(|a| a != "--").skip(1).collect();
-        if args.is_empty() {
-            return Err("no command specified after -- separator".into());
-        }
-        if let Some(s) = save {
-            save_cred(base, tier, s, secret)?;
-        }
-        let exit_code = env_run::run_with_env(var_name, secret, &args)?;
-        std::process::exit(exit_code);
-    } else if clipboard {
-        let s = std::str::from_utf8(secret).map_err(|_| "Secret contains non-UTF8 data".to_string())?;
-        let mut cb = arboard::Clipboard::new().map_err(|e| format!("Failed to access clipboard: {}", e))?;
-        cb.set_text(s).map_err(|e| format!("Failed to copy: {}", e))?;
-        println!("Password copied to clipboard");
-    } else {
-        let s = std::str::from_utf8(secret).map_err(|_| "Invalid UTF-8".to_string())?;
-        println!("{}", s);
+        let (aes_key, kp) = open_keystore(base)?;
+        ensure_level(base, &kp, &aes_key, &level)?;
+
+        ops::add_credential(
+            &kp,
+            &aes_key,
+            domain,
+            account,
+            &password,
+            &level,
+            args.description.as_deref(),
+            &args.tags,
+        )
+        .map_err(|e| {
+            if e.contains("already exists") {
+                format!(
+                    "Credential {} already exists. Delete it first or use a different name.",
+                    KeyStore::credential_key(domain, account)
+                )
+            } else {
+                e
+            }
+        })?;
+        println!("Saved to {}/{}", domain, account);
     }
 
-    if let Some(s) = save {
-        save_cred(base, tier, s, secret)?;
-        println!("Saved to {}/{}", s[0], s[1]);
+    // --- Output the generated value ---
+    if let Some(var_name) = &args.env {
+        let trailing = get_trailing_args();
+        if trailing.is_empty() {
+            return Err("no command specified after -- separator".into());
+        }
+        let code = keybox::env_run::run_with_env(var_name, secret, &trailing)?;
+        std::process::exit(code);
+    } else if args.clipboard {
+        let s = std::str::from_utf8(secret)
+            .map_err(|_| "Secret contains non-UTF8 data".to_string())?;
+        let mut cb = arboard::Clipboard::new()
+            .map_err(|e| format!("Failed to access clipboard: {}", e))?;
+        cb.set_text(s)
+            .map_err(|e| format!("Failed to copy: {}", e))?;
+        println!("Password copied to clipboard");
+    } else {
+        println!("{}", password);
     }
 
     Ok(())
 }
 
-// ── Entry point ──────────────────────────────────────────────────
+// ── Entry point ─────────────────────────────────────────────────────
 
-fn main() {
+fn main() -> Result<(), String> {
     let cli = Cli::parse();
-    let base = config_dir();
+    let base = resolve_base(cli.base.as_deref())?;
 
-    let tier = match cli.tier() {
-        keybox::cli::Tier::Secret => Tier::Secret,
-        keybox::cli::Tier::Confidential => Tier::Confidential,
-        keybox::cli::Tier::TopSecret => Tier::TopSecret,
-    };
-
-    let result = match &cli.command {
+    match cli.command {
+        Command::Init { level } => handle_init(&base, level.as_deref()),
         Command::Add {
-            domain,
-            account,
-            non_interactive,
-            password,
+            target,
+            level,
+            description,
+            tags,
+            stdin,
+            no_interactive,
         } => handle_add(
             &base,
-            tier,
-            domain,
-            account,
-            *non_interactive,
-            password.as_deref(),
+            &target,
+            level.as_deref(),
+            description.as_deref(),
+            &tags,
+            stdin,
+            no_interactive,
         ),
         Command::Get {
-            domain,
-            account,
-            env,
+            field,
+            user,
             clipboard,
-        } => handle_get(&base, tier, domain, account, env.as_deref(), *clipboard),
-        Command::List { domain, json } => {
-            handle_list(&base, tier, domain.as_deref(), *json)
-        }
-        Command::Delete { domain, account } => {
-            handle_delete(&base, tier, domain, account)
-        }
-        Command::Update {
-            domain,
-            account,
-            non_interactive,
-            password,
-        } => handle_update(
+            env,
+            force,
+            access_token,
+            no_interactive,
+        } => handle_get(
             &base,
-            tier,
-            domain,
-            account,
-            *non_interactive,
-            password.as_deref(),
+            field.as_deref(),
+            &user,
+            clipboard,
+            env.as_deref(),
+            force,
+            access_token.as_deref(),
+            no_interactive,
         ),
-        Command::Init {
-            file,
-            non_interactive,
-            password,
-        } => handle_init(
-            &base,
-            tier,
-            file.as_deref(),
-            *non_interactive,
-            password.as_deref(),
-        ),
-        Command::Serve => handle_serve(&base, tier),
-        Command::Unlock => handle_unlock(&base, tier),
-        Command::Lock => handle_lock(&base, tier),
-        Command::Stop => handle_stop(&base, tier),
-        Command::Generate {
-            length, lowercase, uppercase, digits, symbols, chinese,
-            passphrase, wordlist, clipboard, env,
-            save, exclude_similar,
-        } => {
-            handle_generate(
-                &base, tier, *length,
-                *lowercase, *uppercase, *digits, *symbols, *chinese,
-                *passphrase, wordlist.as_deref(),
-                *clipboard, env.as_deref(),
-                save.as_deref(),
-                *exclude_similar,
-            )
+        Command::List { format, level, tag } => {
+            handle_list(&base, &format, level.as_deref(), tag.as_deref())
         }
-    };
-
-    if let Err(e) = result {
-        eprintln!("Error: {}", e);
-        process::exit(1);
+        Command::Edit {
+            target,
+            description,
+            tags,
+            no_interactive,
+        } => handle_edit(&base, &target, description.as_deref(), &tags, no_interactive),
+        Command::Update { sub } => match sub {
+            UpdateSub::Password { target } => handle_update_password(&base, &target),
+        },
+        Command::Delete {
+            target,
+            no_interactive,
+        } => handle_delete(&base, &target, no_interactive),
+        Command::Serve => handle_serve(&base),
+        Command::Unlock {
+            level,
+            timeout,
+            clipboard,
+            env,
+        } => handle_unlock(&base, &level, timeout, clipboard, env.as_deref()),
+        Command::Lock => handle_lock(&base),
+        Command::Stop => handle_stop(&base),
+        Command::Generate(args) => handle_generate(&base, &args),
     }
 }

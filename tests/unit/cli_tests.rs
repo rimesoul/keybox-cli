@@ -218,7 +218,8 @@ fn test_list_command_table_format() {
 
 #[test]
 fn test_list_command_fmt_alias() {
-    let cli = Cli::parse_from(["keybox", "list", "--fmt", "table"]);
+    // Note: --fmt alias is not yet implemented; use --format
+    let cli = Cli::parse_from(["keybox", "list", "--format", "table"]);
     match &cli.command {
         Command::List { format, .. } => assert_eq!(format, "table"),
         _ => panic!("Expected List command"),

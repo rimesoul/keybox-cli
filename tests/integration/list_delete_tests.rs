@@ -8,31 +8,27 @@ fn test_list_domains() {
     let config_dir = dir.path().to_str().unwrap();
 
     // Add credentials in two different domains
-    for (domain, account, password) in [
-        ("gitea", "pat", "secret123"),
-        ("github", "token", "ghp_abc123"),
+    for (target, password) in [
+        ("gitea:pat", "secret123"),
+        ("github:token", "ghp_abc123"),
     ] {
         let mut cmd = Command::cargo_bin("keybox").unwrap();
         cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-            .args([
-                "add",
-                domain,
-                account,
-                "--non-interactive",
-                "--password",
-                password,
-            ])
+            .args(["add", target, "--stdin"])
+            .write_stdin(format!("{}\n", password))
             .assert()
             .success();
     }
 
-    // List domains and verify both appear
+    // List credentials and verify both appear
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", config_dir)
         .args(["list"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("gitea").and(predicate::str::contains("github")));
+        .stdout(
+            predicate::str::contains("gitea").and(predicate::str::contains("github")),
+        );
 }
 
 #[test]
@@ -41,28 +37,24 @@ fn test_list_accounts_in_domain() {
     let config_dir = dir.path().to_str().unwrap();
 
     // Add two accounts in the same domain
-    for (account, password) in [("pat", "secret123"), ("oauth", "token456")] {
+    for (target, password) in [("gitea:pat", "secret123"), ("gitea:oauth", "token456")] {
         let mut cmd = Command::cargo_bin("keybox").unwrap();
         cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-            .args([
-                "add",
-                "gitea",
-                account,
-                "--non-interactive",
-                "--password",
-                password,
-            ])
+            .args(["add", target, "--stdin"])
+            .write_stdin(format!("{}\n", password))
             .assert()
             .success();
     }
 
-    // List accounts in the domain and verify both appear
+    // List credentials and verify both appear
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args(["list", "gitea"])
+        .args(["list"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("pat").and(predicate::str::contains("oauth")));
+        .stdout(
+            predicate::str::contains("pat").and(predicate::str::contains("oauth")),
+        );
 }
 
 #[test]
@@ -73,24 +65,18 @@ fn test_list_json_output() {
     // Add a credential
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args([
-            "add",
-            "gitea",
-            "pat",
-            "--non-interactive",
-            "--password",
-            "secret123",
-        ])
+        .args(["add", "gitea:pat", "--stdin"])
+        .write_stdin("secret123\n")
         .assert()
         .success();
 
-    // List with --json and verify JSON array output
+    // List with default format (JSON) and verify JSON array output
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args(["list", "--json"])
+        .args(["list"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("[\n").and(predicate::str::contains("gitea").and(predicate::str::contains("]"))));
+        .stdout(predicate::str::contains("\"domain\": \"gitea\"").and(predicate::str::contains("\"account\": \"pat\"")));
 }
 
 #[test]
@@ -101,21 +87,15 @@ fn test_delete_credential() {
     // Add a credential
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args([
-            "add",
-            "gitea",
-            "pat",
-            "--non-interactive",
-            "--password",
-            "secret123",
-        ])
+        .args(["add", "gitea:pat", "--stdin"])
+        .write_stdin("secret123\n")
         .assert()
         .success();
 
-    // Delete the credential with stdin "y\n" for confirmation (when interactive)
+    // Delete the credential with stdin "y\n" for confirmation
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args(["delete", "gitea", "pat"])
+        .args(["delete", "gitea:pat"])
         .write_stdin("y\n")
         .assert()
         .success();
@@ -123,7 +103,7 @@ fn test_delete_credential() {
     // Verify get fails afterward
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", config_dir)
-        .args(["get", "gitea", "pat"])
+        .args(["get", "--user", "gitea:pat", "--force"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));

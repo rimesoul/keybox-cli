@@ -51,13 +51,21 @@ fn test_generate_and_save() {
     let dir = TempDir::new().unwrap();
     Command::cargo_bin("keybox").unwrap()
         .env("KEYBOX_CONFIG_DIR", dir.path().to_str().unwrap())
-        .args(["generate", "--digits", "--length", "6", "--save", "test", "pin"])
+        .args([
+            "generate",
+            "--digits",
+            "--length",
+            "6",
+            "--save",
+            "test:pin",
+        ])
         .assert()
         .success();
 
+    // Get returns the saved value
     Command::cargo_bin("keybox").unwrap()
         .env("KEYBOX_CONFIG_DIR", dir.path().to_str().unwrap())
-        .args(["get", "test", "pin"])
+        .args(["get", "--user", "test:pin", "--force"])
         .assert()
         .success()
         .stdout(predicate::function(|output: &str| {
@@ -70,13 +78,27 @@ fn test_generate_save_duplicate_fails() {
     let dir = TempDir::new().unwrap();
     Command::cargo_bin("keybox").unwrap()
         .env("KEYBOX_CONFIG_DIR", dir.path().to_str().unwrap())
-        .args(["generate", "--digits", "--length", "6", "--save", "test", "pin"])
+        .args([
+            "generate",
+            "--digits",
+            "--length",
+            "6",
+            "--save",
+            "test:pin",
+        ])
         .assert()
         .success();
 
     Command::cargo_bin("keybox").unwrap()
         .env("KEYBOX_CONFIG_DIR", dir.path().to_str().unwrap())
-        .args(["generate", "--digits", "--length", "6", "--save", "test", "pin"])
+        .args([
+            "generate",
+            "--digits",
+            "--length",
+            "6",
+            "--save",
+            "test:pin",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("already exists"));
@@ -89,6 +111,7 @@ fn test_generate_uppercase_no_save() {
         .assert()
         .success()
         .stdout(predicate::function(|output: &str| {
-            output.trim().chars().all(|c| c.is_ascii_uppercase()) && output.trim().chars().count() == 10
+            output.trim().chars().all(|c| c.is_ascii_uppercase())
+                && output.trim().chars().count() == 10
         }));
 }

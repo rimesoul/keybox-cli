@@ -6,24 +6,19 @@ use tempfile::TempDir;
 fn test_add_and_get_secret_credential() {
     let dir = TempDir::new().unwrap();
 
-    // Add credential non-interactively
+    // Add credential with secret via stdin
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", dir.path().to_str().unwrap())
-        .args([
-            "add",
-            "gitea",
-            "pat",
-            "--non-interactive",
-            "--password",
-            "secret123",
-        ])
+        .args(["add", "gitea:pat", "--stdin"])
+        .write_stdin("secret123\n")
         .assert()
         .success();
 
-    // Get credential and verify output contains the secret
+    // Get credential and verify output contains the secret (masked in "all" mode)
+    // Use --force to display password
     let mut cmd = Command::cargo_bin("keybox").unwrap();
     cmd.env("KEYBOX_CONFIG_DIR", dir.path().to_str().unwrap())
-        .args(["get", "gitea", "pat"])
+        .args(["get", "--user", "gitea:pat", "--force"])
         .assert()
         .success()
         .stdout(predicate::str::contains("secret123"));
