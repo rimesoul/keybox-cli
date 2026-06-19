@@ -184,6 +184,124 @@ pub fn get_password(
         .map_err(|e| format!("Age decryption failed: {}", e))
 }
 
+/// List all credentials. The `secret` field is replaced with "<masked>".
+/// Optional filters by crypt_level and tag.
+pub fn list_credentials(
+    path: &Path,
+    aes_key: &[u8],
+    filter_level: Option<&str>,
+    filter_tag: Option<&str>,
+) -> Result<Vec<Credential>, String> {
+    let store = load_store(path, aes_key)?;
+    let mut results: Vec<Credential> = store
+        .credentials
+        .into_values()
+        .filter(|c| {
+            let level_ok = filter_level.is_none_or(|l| c.crypt_level.as_str() == l);
+            let tag_ok = filter_tag.is_none_or(|t| c.tags.contains(&t.to_string()));
+            level_ok && tag_ok
+        })
+        .map(|mut c| {
+            c.secret = "<masked>".to_string();
+            c
+        })
+        .collect();
+    results.sort_by(|a, b| {
+        let ka = KeyStore::credential_key(&a.domain, &a.account);
+        let kb = KeyStore::credential_key(&b.domain, &b.account);
+        ka.cmp(&kb)
+    });
+    Ok(results)
+}
+
+/// Edit credential metadata (description, tags). Does NOT touch the secret.
+pub fn edit_credential(
+    path: &Path,
+    aes_key: &[u8],
+    domain: &str,
+    account: &str,
+    description: Option<&str>,
+    tags: Option<&[String]>,
+) -> Result<(), String> {
+    let mut store = load_store(path, aes_key)?;
+    let key = KeyStore::credential_key(domain, account);
+    let cred = store
+        .credentials
+        .get_mut(&key)
+        .ok_or_else(|| format!("Credential not found: {}", key))?;
+
+    if let Some(d) = description {
+        cred.description = Some(d.to_string());
+    }
+    if let Some(t) = tags {
+        cred.tags = t.to_vec();
+    }
+    cred.updated_at = chrono_now_iso();
+    save_store(path, &store, aes_key)
+}
+
+/// Delete a credential from the keystore.
+pub fn delete_credential(
+    path: &Path,
+    aes_key: &[u8],
+    domain: &str,
+    account: &str,
+) -> Result<(), String> {
+    let mut store = load_store(path, aes_key)?;
+    let key = KeyStore::credential_key(domain, account);
+    if store.credentials.remove(&key).is_none() {
+        return Err(format!("Credential not found: {}", key));
+    }
+    save_store(path, &store, aes_key)
+}
+
+/// Update a credential's secret. Verifies old password first, then re-encrypts
+/// with the new password using the same crypt_level's public key.
+pub fn update_password(
+    path: &Path,
+    aes_key: &[u8],
+    domain: &str,
+    account: &str,
+    old_plaintext: &str,
+    new_plaintext: &str,
+    identity: &age::x25519::Identity,
+) -> Result<(), String> {
+    let mut store = load_store(path, aes_key)?;
+    let key = KeyStore::credential_key(domain, account);
+    let cred = store
+        .credentials
+        .get_mut(&key)
+        .ok_or_else(|| format!("Credential not found: {}", key))?;
+
+    let level_str = cred.crypt_level.as_str();
+
+    // Verify old password by decrypting current secret
+    let ciphertext = b64_decode(&cred.secret)?;
+    let decrypted = age_ops::decrypt_with_identity(identity, &ciphertext)
+        .map_err(|_| "Current password is incorrect".to_string())?;
+    if decrypted != old_plaintext.as_bytes() {
+        return Err("Current password is incorrect".into());
+    }
+
+    // Re-encrypt with new password using the same recipient
+    let kp = store
+        .key_pairs
+        .get(level_str)
+        .ok_or_else(|| format!("Level '{}' key pair missing", level_str))?;
+    let recipient: age::x25519::Recipient = kp
+        .public_key
+        .parse()
+        .map_err(|e| format!("Invalid age public key: {}", e))?;
+    let new_secret = b64_encode(
+        &age_ops::encrypt_with_recipient(&recipient, new_plaintext.as_bytes())
+            .map_err(|e| format!("Encrypt failed: {}", e))?,
+    );
+
+    cred.secret = new_secret;
+    cred.updated_at = chrono_now_iso();
+    save_store(path, &store, aes_key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +560,170 @@ mod crud_tests {
             std::str::from_utf8(&decrypted).unwrap(),
             "super-secret-token"
         );
+    }
+
+    #[test]
+    fn test_list_masks_secret() {
+        let dir = tempdir().unwrap();
+        let path = keystore_path(dir.path());
+        let (aes_key, _) = setup_store_with_secret_keypair(&path);
+
+        add_credential(
+            &path,
+            &aes_key,
+            "github.com",
+            "brian",
+            "tok",
+            &CryptLevel::Secret,
+            None,
+            &[],
+        )
+        .unwrap();
+        add_credential(
+            &path,
+            &aes_key,
+            "gitlab.com",
+            "alice",
+            "tok2",
+            &CryptLevel::Secret,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let list = list_credentials(&path, &aes_key, None, None).unwrap();
+        assert_eq!(list.len(), 2);
+        for cred in &list {
+            assert_eq!(cred.secret, "<masked>");
+        }
+    }
+
+    #[test]
+    fn test_list_filter_by_level() {
+        let dir = tempdir().unwrap();
+        let path = keystore_path(dir.path());
+        let (aes_key, _) = setup_store_with_secret_keypair(&path);
+
+        add_credential(
+            &path,
+            &aes_key,
+            "a.com",
+            "u1",
+            "t",
+            &CryptLevel::Secret,
+            None,
+            &[],
+        )
+        .unwrap();
+        let list = list_credentials(&path, &aes_key, Some("secret"), None).unwrap();
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn test_edit_updates_description() {
+        let dir = tempdir().unwrap();
+        let path = keystore_path(dir.path());
+        let (aes_key, _) = setup_store_with_secret_keypair(&path);
+
+        add_credential(
+            &path,
+            &aes_key,
+            "example.com",
+            "user",
+            "pw",
+            &CryptLevel::Secret,
+            Some("old desc"),
+            &[],
+        )
+        .unwrap();
+
+        edit_credential(&path, &aes_key, "example.com", "user", Some("new desc"), None).unwrap();
+
+        let cred = get_credential(&path, &aes_key, "example.com", "user").unwrap();
+        assert_eq!(cred.description, Some("new desc".into()));
+    }
+
+    #[test]
+    fn test_delete_removes_credential() {
+        let dir = tempdir().unwrap();
+        let path = keystore_path(dir.path());
+        let (aes_key, _) = setup_store_with_secret_keypair(&path);
+
+        add_credential(
+            &path,
+            &aes_key,
+            "delete.me",
+            "user",
+            "pw",
+            &CryptLevel::Secret,
+            None,
+            &[],
+        )
+        .unwrap();
+        delete_credential(&path, &aes_key, "delete.me", "user").unwrap();
+        assert!(get_credential(&path, &aes_key, "delete.me", "user").is_err());
+    }
+
+    #[test]
+    fn test_update_password_correct_old() {
+        let dir = tempdir().unwrap();
+        let path = keystore_path(dir.path());
+        let (aes_key, identity) = setup_store_with_secret_keypair(&path);
+
+        add_credential(
+            &path,
+            &aes_key,
+            "svc",
+            "admin",
+            "oldpass",
+            &CryptLevel::Secret,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        update_password(
+            &path,
+            &aes_key,
+            "svc",
+            "admin",
+            "oldpass",
+            "newpass",
+            &identity,
+        )
+        .unwrap();
+
+        let decrypted = get_password(&path, &aes_key, "svc", "admin", &identity).unwrap();
+        assert_eq!(std::str::from_utf8(&decrypted).unwrap(), "newpass");
+    }
+
+    #[test]
+    fn test_update_password_wrong_old_rejected() {
+        let dir = tempdir().unwrap();
+        let path = keystore_path(dir.path());
+        let (aes_key, identity) = setup_store_with_secret_keypair(&path);
+
+        add_credential(
+            &path,
+            &aes_key,
+            "svc",
+            "admin",
+            "correct",
+            &CryptLevel::Secret,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let result = update_password(
+            &path,
+            &aes_key,
+            "svc",
+            "admin",
+            "wrong",
+            "newpass",
+            &identity,
+        );
+        assert!(result.is_err());
     }
 }
