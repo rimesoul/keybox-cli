@@ -55,13 +55,13 @@ keybox add github.com:brian           # prompts for token, saves at secret level
 keybox add aws:admin --level con      # saves at confidential level
 keybox add :my-root --tags "default"  # default domain (omitted domain)
 
-# Get credentials (password never prints to stdout by default)
-keybox get password -u github.com:brian          # → clipboard (auto-decrypt for secret)
-keybox get password -u aws:admin                 # → prompts for passphrase (con level)
-keybox get description -u github.com:brian       # → prints to stdout (metadata, no decrypt)
-
-# Force plaintext display
-keybox get password -u github.com:brian --force
+# Get credentials
+# Default: shows warning, requires --clipboard/--env/--force
+keybox get password -u github.com:brian --clipboard   # copy to clipboard
+keybox get password -u aws:admin --clipboard          # prompts for passphrase (con level)
+keybox get password -u github.com:brian --force       # force display to stdout
+keybox get password -u github.com:brian --env GITHUB_TOKEN  # inject as env var
+keybox get description -u github.com:brian            # prints metadata (no decrypt needed)
 
 # List all credentials (JSON by default)
 keybox list
