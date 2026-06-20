@@ -107,7 +107,32 @@ fn load_with_protector(path: &Path) -> Result<Vec<u8>, String> {
     MacOSProtector::new().unprotect(path)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn store_with_protector(data: &[u8], path: &Path) -> Result<(), String> {
+    use crate::protect::LinuxProtector;
+    LinuxProtector::new().protect(data, path)
+}
+
+#[cfg(target_os = "linux")]
+fn load_with_protector(path: &Path) -> Result<Vec<u8>, String> {
+    use crate::protect::LinuxProtector;
+    LinuxProtector::new().unprotect(path)
+}
+
+#[cfg(target_os = "windows")]
+fn store_with_protector(data: &[u8], path: &Path) -> Result<(), String> {
+    use crate::protect::DpapiProtector;
+    DpapiProtector::new().protect(data, path)
+}
+
+#[cfg(target_os = "windows")]
+fn load_with_protector(path: &Path) -> Result<Vec<u8>, String> {
+    use crate::protect::DpapiProtector;
+    DpapiProtector::new().unprotect(path)
+}
+
+// Plaintext fallback for platforms without a native protector.
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn store_with_protector(data: &[u8], path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
@@ -115,7 +140,7 @@ fn store_with_protector(data: &[u8], path: &Path) -> Result<(), String> {
     std::fs::write(path, data).map_err(|e| format!("Failed to write: {}", e))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn load_with_protector(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("Failed to read: {}", e))
 }
