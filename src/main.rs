@@ -76,6 +76,37 @@ fn copy_to_clipboard(secret: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Output a secret (password or token) according to the selected flags.
+/// Priority: --env > --clipboard > --force > stdout warning.
+fn output_secret(secret: &[u8], env: Option<&str>, clipboard: bool, force: bool) -> Result<(), String> {
+    if let Some(var_name) = env {
+        let trailing = get_trailing_args();
+        if trailing.is_empty() {
+            io::stdout()
+                .write_all(secret)
+                .map_err(|e| e.to_string())?;
+            println!();
+        } else {
+            let code = keybox::env_run::run_with_env(var_name, secret, &trailing)?;
+            process::exit(code);
+        }
+    } else if clipboard {
+        copy_to_clipboard(secret)?;
+        eprintln!("Secret copied to clipboard.");
+    } else if force {
+        io::stdout()
+            .write_all(secret)
+            .map_err(|e| e.to_string())?;
+        println!();
+    } else {
+        eprintln!(
+            "Use --force to display, --clipboard to copy, or --env to inject."
+        );
+        println!("<masked>");
+    }
+    Ok(())
+}
+
 fn get_trailing_args() -> Vec<String> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(pos) = args.iter().position(|a| a == "--") {
@@ -416,8 +447,6 @@ fn handle_get(
     access_token: Option<&str>,
     no_interactive: bool,
 ) -> Result<(), String> {
-    let _ = access_token; // reserved for daemon (Phase 5)
-
     // When output flags are used, default to getting the password
     let field = if force || clipboard || env.is_some() {
         field.unwrap_or("password")
@@ -432,16 +461,7 @@ fn handle_get(
     let cred = ops::get_credential(&kp, &aes_key, domain, account)?;
 
     if field == "all" || field == "metadata" {
-        let output = if field == "metadata" {
-            let mut meta = cred.clone();
-            meta.secret = "<masked>".to_string();
-            meta
-        } else {
-            cred.clone() // secret already masked by ops::get_credential? No, it returns actual
-        };
-
-        // For "all", print JSON with secret masked (don't decrypt)
-        let mut display = output.clone();
+        let mut display = cred.clone();
         display.secret = "<masked>".to_string();
         let json =
             serde_json::to_string_pretty(&display).map_err(|e| format!("JSON error: {}", e))?;
@@ -450,6 +470,22 @@ fn handle_get(
     }
 
     if field == "password" {
+        // If an access token is provided, use the daemon for decryption.
+        // Works even in non-interactive mode — the daemon handles identity.
+        if let Some(token) = access_token {
+            use keybox::daemon::client;
+            use keybox::daemon::protocol::Response;
+
+            let response = client::get(base, domain, account, "password", Some(token))?;
+            let secret: Vec<u8> = match response {
+                Response::Value(s) => s.into_bytes(),
+                Response::Error(msg) => return Err(msg),
+                _ => return Err("Unexpected response from daemon".into()),
+            };
+            output_secret(&secret, env, clipboard, force)?;
+            return Ok(());
+        }
+
         if no_interactive {
             return Err(
                 "Cannot decrypt password in non-interactive mode. Use --no-interactive only for metadata fields."
@@ -460,31 +496,7 @@ fn handle_get(
         let identity = resolve_identity(base, &aes_key, level_str)?;
         let secret = ops::get_password(&kp, &aes_key, domain, account, &identity)?;
 
-        if let Some(var_name) = env {
-            let trailing = get_trailing_args();
-            if trailing.is_empty() {
-                io::stdout()
-                    .write_all(&secret)
-                    .map_err(|e| e.to_string())?;
-                println!();
-            } else {
-                let code = keybox::env_run::run_with_env(var_name, &secret, &trailing)?;
-                process::exit(code);
-            }
-        } else if clipboard {
-            copy_to_clipboard(&secret)?;
-            eprintln!("Password copied to clipboard.");
-        } else if force {
-            io::stdout()
-                .write_all(&secret)
-                .map_err(|e| e.to_string())?;
-            println!();
-        } else {
-            eprintln!(
-                "Use --force to display the password, --clipboard to copy, or --env to inject."
-            );
-            println!("<masked>");
-        }
+        output_secret(&secret, env, clipboard, force)?;
         return Ok(());
     }
 
@@ -635,8 +647,8 @@ fn handle_unlock(
     base: &Path,
     level: &str,
     timeout: u64,
-    _clipboard: bool,
-    _env: Option<&str>,
+    clipboard: bool,
+    env: Option<&str>,
 ) -> Result<(), String> {
     use keybox::daemon::client;
     use keybox::daemon::protocol::Response;
@@ -661,7 +673,20 @@ fn handle_unlock(
     match response {
         Response::Unlocked { token, level: l } => {
             eprintln!("Unlocked {} tier.", l);
-            println!("{}", token);
+
+            if let Some(var_name) = env {
+                let trailing = get_trailing_args();
+                if trailing.is_empty() {
+                    return Err("no command specified after -- separator".into());
+                }
+                let code = keybox::env_run::run_with_env(var_name, token.as_bytes(), &trailing)?;
+                process::exit(code);
+            } else if clipboard {
+                copy_to_clipboard(token.as_bytes())?;
+                eprintln!("Token copied to clipboard.");
+            } else {
+                println!("{}", token);
+            }
             Ok(())
         }
         Response::Error(msg) => Err(msg),
