@@ -3,10 +3,10 @@ use std::collections::HashMap;
 
 // ── Helper ──────────────────────────────────────────────────────────
 
-fn chrono_now_iso() -> String {
-    // Use std::time + manual formatting, or use chrono crate if already a dependency
-    // For now: return a fixed string placeholder; real implementation will use proper time
-    "2026-01-01T00:00:00Z".to_string()
+/// Return the current UTC time as an ISO 8601 / RFC 3339 string with
+/// seconds precision and a trailing "Z" (e.g. "2026-06-20T12:34:56Z").
+pub fn chrono_now_iso() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 // ── CryptLevel ──────────────────────────────────────────────────────
@@ -70,8 +70,6 @@ pub struct Credential {
     pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_access_at: Option<String>,
     pub crypt_level: CryptLevel,
     pub secret: String,
 }
@@ -134,7 +132,6 @@ mod tests {
             tags: vec!["git".into()],
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
-            last_access_at: None,
             crypt_level: CryptLevel::Secret,
             secret: "base64_encrypted".into(),
         });
@@ -145,7 +142,6 @@ mod tests {
         assert_eq!(cred.domain, "github.com");
         assert_eq!(cred.account, "brian");
         assert_eq!(cred.description, Some("token".to_string()));
-        assert_eq!(cred.last_access_at, None);
         assert_eq!(cred.crypt_level, CryptLevel::Secret);
         assert_eq!(cred.secret, "base64_encrypted");
         assert_eq!(cred.tags, vec!["git"]);
@@ -184,5 +180,37 @@ mod tests {
         let cred: Credential = serde_json::from_str(json).unwrap();
         assert!(cred.tags.is_empty());
         assert_eq!(cred.description, None);
+    }
+
+    #[test]
+    fn test_deserialize_credential_with_legacy_last_access_at() {
+        // Keystore files written by v0.2.0 included a "last_access_at" field.
+        // After its removal, deserialization must still succeed and preserve
+        // all other fields (serde ignores unknown fields by default).
+        let json = r#"{"id":"x","domain":"d","account":"a","created_at":"t","updated_at":"t","last_access_at":"2026-06-18T09:00:00Z","crypt_level":"secret","secret":"s"}"#;
+        let cred: Credential = serde_json::from_str(json).unwrap();
+        assert_eq!(cred.id, "x");
+        assert_eq!(cred.domain, "d");
+        assert_eq!(cred.account, "a");
+        assert_eq!(cred.crypt_level, CryptLevel::Secret);
+        assert_eq!(cred.secret, "s");
+    }
+
+    #[test]
+    fn test_chrono_now_iso_returns_real_current_time() {
+        let ts = chrono_now_iso();
+        let parsed = chrono::DateTime::parse_from_rfc3339(&ts)
+            .unwrap_or_else(|e| panic!("chrono_now_iso returned invalid RFC 3339 '{}': {}", ts, e));
+        let now = chrono::Utc::now();
+        let delta = now
+            .signed_duration_since(parsed.with_timezone(&chrono::Utc))
+            .num_seconds()
+            .abs();
+        assert!(
+            delta < 60,
+            "chrono_now_iso '{}' is too far from now ({}s); expected real current time",
+            ts,
+            delta
+        );
     }
 }

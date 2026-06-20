@@ -177,7 +177,7 @@ keybox get password -u aws:admin --no-interactive --clipboard \
 每个凭据记录包含：
 - `id`、`domain`、`account` — 标识符
 - `description`、`tags` — LLM 友好的元数据
-- `created_at`、`updated_at`、`last_access_at` — 时间戳
+- `created_at`、`updated_at` — 时间戳
 - `crypt_level` — secret / confidential / top-secret
 - `secret` — age 加密的凭据值（base64）
 

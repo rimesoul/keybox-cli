@@ -1,5 +1,5 @@
 use super::format;
-use super::schema::{Credential, CryptLevel, KeyStore};
+use super::schema::{chrono_now_iso, Credential, CryptLevel, KeyStore};
 use crate::crypto::age_ops;
 use crate::protect::IdentityProtector;
 use base64::Engine;
@@ -65,13 +65,6 @@ fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(s)
         .map_err(|e| format!("Base64 decode: {}", e))
-}
-
-// ── Local time helper (mirrors schema::chrono_now_iso) ──────────────
-
-fn chrono_now_iso() -> String {
-    // Placeholder — real implementation will use proper time
-    "2026-01-01T00:00:00Z".to_string()
 }
 
 // ── CRUD Operations ─────────────────────────────────────────────────
@@ -142,7 +135,6 @@ pub fn add_credential(
             tags: tags.to_vec(),
             created_at: now.clone(),
             updated_at: now,
-            last_access_at: None,
             crypt_level: crypt_level.clone(),
             secret,
         },
@@ -342,7 +334,6 @@ mod tests {
                 tags: vec!["git".into()],
                 created_at: "2026-01-01T00:00:00Z".into(),
                 updated_at: "2026-01-01T00:00:00Z".into(),
-                last_access_at: None,
                 crypt_level: CryptLevel::Secret,
                 secret: "encrypted_base64".into(),
             },

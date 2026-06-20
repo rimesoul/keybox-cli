@@ -187,7 +187,7 @@ Encrypted body (AES-256-GCM):
 Each credential record contains:
 - `id`, `domain`, `account` — identifiers
 - `description`, `tags` — LLM-friendly metadata
-- `created_at`, `updated_at`, `last_access_at` — timestamps
+- `created_at`, `updated_at` — timestamps
 - `crypt_level` — secret / con / top
 - `secret` — age-encrypted credential value (base64)
 
