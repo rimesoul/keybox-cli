@@ -89,7 +89,7 @@ fn test_exclude_similar_removes_ambiguous_chars() {
 #[test]
 fn test_generate_password_length() {
     let chars = generate::build_charset(true, true, true, false, false);
-    let pw = generate::generate_password(32, &chars);
+    let pw = generate::generate_password(32, &chars).unwrap();
     assert_eq!(pw.len(), 32);
     assert!(pw.chars().all(|c| chars.contains(&c)));
 }
@@ -97,7 +97,7 @@ fn test_generate_password_length() {
 #[test]
 fn test_generate_password_length_clamps_to_max() {
     let chars = generate::build_charset(true, false, false, false, false);
-    let pw = generate::generate_password(500, &chars);
+    let pw = generate::generate_password(500, &chars).unwrap();
     // Length should be clamped to MAX_LENGTH (256)
     assert_eq!(pw.len(), 256);
     // All chars should be from the charset
@@ -105,17 +105,22 @@ fn test_generate_password_length_clamps_to_max() {
 }
 
 #[test]
-#[should_panic(expected = "length must be at least 1")]
-fn test_generate_password_length_zero_panics() {
+fn test_generate_password_length_zero_error() {
     let chars = generate::build_charset(true, false, false, false, false);
-    generate::generate_password(0, &chars);
+    assert!(generate::generate_password(0, &chars).is_err());
+}
+
+#[test]
+fn test_generate_password_empty_charset_error() {
+    let chars: Vec<char> = vec![];
+    assert!(generate::generate_password(1, &chars).is_err());
 }
 
 #[test]
 fn test_randomness_produces_variation() {
     let chars = generate::build_charset(true, true, true, true, false);
-    let pw1 = generate::generate_password(64, &chars);
-    let pw2 = generate::generate_password(64, &chars);
+    let pw1 = generate::generate_password(64, &chars).unwrap();
+    let pw2 = generate::generate_password(64, &chars).unwrap();
     assert_ne!(pw1, pw2);
 }
 
@@ -143,30 +148,42 @@ fn count_passphrase_words(passphrase: &str, wordlist: &[String]) -> usize {
 }
 
 #[test]
+fn test_passphrase_zero_word_count_error() {
+    let wordlist = generate::load_wordlist();
+    assert!(generate::generate_passphrase(0, &wordlist).is_err());
+}
+
+#[test]
+fn test_passphrase_empty_wordlist_error() {
+    let wordlist: Vec<String> = vec![];
+    assert!(generate::generate_passphrase(1, &wordlist).is_err());
+}
+
+#[test]
 fn test_passphrase_default() {
     let wordlist = generate::load_wordlist();
-    let passphrase = generate::generate_passphrase(4, &wordlist);
+    let passphrase = generate::generate_passphrase(4, &wordlist).unwrap();
     assert_eq!(count_passphrase_words(&passphrase, &wordlist), 4);
 }
 
 #[test]
 fn test_passphrase_word_count() {
     let wordlist = generate::load_wordlist();
-    let passphrase = generate::generate_passphrase(6, &wordlist);
+    let passphrase = generate::generate_passphrase(6, &wordlist).unwrap();
     assert_eq!(count_passphrase_words(&passphrase, &wordlist), 6);
 }
 
 #[test]
 fn test_passphrase_length_clamping() {
     let wordlist = generate::load_wordlist();
-    let passphrase = generate::generate_passphrase(200, &wordlist);
+    let passphrase = generate::generate_passphrase(200, &wordlist).unwrap();
     assert_eq!(count_passphrase_words(&passphrase, &wordlist), 128);
 }
 
 #[test]
 fn test_passphrase_randomness() {
     let wordlist = generate::load_wordlist();
-    let pw1 = generate::generate_passphrase(8, &wordlist);
-    let pw2 = generate::generate_passphrase(8, &wordlist);
+    let pw1 = generate::generate_passphrase(8, &wordlist).unwrap();
+    let pw2 = generate::generate_passphrase(8, &wordlist).unwrap();
     assert_ne!(pw1, pw2);
 }

@@ -720,7 +720,7 @@ fn handle_generate(base: &Path, args: &GenerateArgs) -> Result<(), String> {
             }
             None => generate::load_wordlist(),
         };
-        generate::generate_passphrase(args.length, &words)
+        generate::generate_passphrase(args.length, &words)?
     } else {
         let has_explicit_charset =
             args.lowercase || args.uppercase || args.digits || args.symbols || args.chinese;
@@ -750,7 +750,7 @@ fn handle_generate(base: &Path, args: &GenerateArgs) -> Result<(), String> {
         if charset.is_empty() {
             return Err("at least one character set required".into());
         }
-        generate::generate_password(args.length, &charset)
+        generate::generate_password(args.length, &charset)?
     };
 
     let secret = password.as_bytes();

@@ -65,24 +65,24 @@ fn build_charset_inner(
     chars
 }
 
-pub fn generate_password(mut length: usize, charset: &[char]) -> String {
+pub fn generate_password(mut length: usize, charset: &[char]) -> Result<String, String> {
     if length == 0 {
-        panic!("length must be at least 1");
+        return Err("length must be at least 1".into());
     }
     if length > MAX_LENGTH {
         length = MAX_LENGTH;
     }
     if charset.is_empty() {
-        panic!("charset is empty");
+        return Err("charset is empty".into());
     }
 
     let mut rng = rand::thread_rng();
-    (0..length)
+    Ok((0..length)
         .map(|_| {
             let idx = rng.gen_range(0..charset.len());
             charset[idx]
         })
-        .collect()
+        .collect())
 }
 
 const MAX_PASSPHRASE_WORDS: usize = 128;
@@ -102,23 +102,23 @@ pub fn load_wordlist() -> Vec<String> {
         .collect()
 }
 
-pub fn generate_passphrase(mut word_count: usize, wordlist: &[String]) -> String {
+pub fn generate_passphrase(mut word_count: usize, wordlist: &[String]) -> Result<String, String> {
     if word_count == 0 {
-        panic!("word count must be at least 1");
+        return Err("word count must be at least 1".into());
     }
     if word_count > MAX_PASSPHRASE_WORDS {
         word_count = MAX_PASSPHRASE_WORDS;
     }
     if wordlist.is_empty() {
-        panic!("wordlist is empty");
+        return Err("wordlist is empty".into());
     }
 
     let mut rng = rand::thread_rng();
-    (0..word_count)
+    Ok((0..word_count)
         .map(|_| {
             let idx = rng.gen_range(0..wordlist.len());
             wordlist[idx].as_str()
         })
         .collect::<Vec<_>>()
-        .join("-")
+        .join("-"))
 }
