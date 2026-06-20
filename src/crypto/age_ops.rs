@@ -47,3 +47,36 @@ pub fn decrypt_with_identity(
     reader.read_to_end(&mut plaintext)?;
     Ok(plaintext)
 }
+
+// ── Passphrase-based encryption (for confidential level identity) ────
+
+/// Encrypt plaintext using an age passphrase (scrypt-based).
+pub fn encrypt_with_passphrase(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
+    let encryptor =
+        Encryptor::with_user_passphrase(age::secrecy::Secret::new(passphrase.to_string()));
+    let mut encrypted = vec![];
+    let mut writer = encryptor
+        .wrap_output(&mut encrypted)
+        .map_err(|_| "Encryption failed".to_string())?;
+    Write::write_all(&mut writer, plaintext).map_err(|_| "Write failed".to_string())?;
+    writer
+        .finish()
+        .map_err(|_| "Finish failed".to_string())?;
+    Ok(encrypted)
+}
+
+/// Decrypt ciphertext that was encrypted with an age passphrase.
+pub fn decrypt_with_passphrase(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
+    let decryptor =
+        Decryptor::new(encrypted).map_err(|e| format!("Age decrypt: {}", e))?;
+    let decryptor = match decryptor {
+        Decryptor::Passphrase(d) => d,
+        _ => return Err("Not a passphrase-encrypted file".into()),
+    };
+    let mut reader = decryptor
+        .decrypt(&age::secrecy::Secret::new(passphrase.to_string()), None)
+        .map_err(|_| "Wrong passphrase".to_string())?;
+    let mut plaintext = vec![];
+    Read::read_to_end(&mut reader, &mut plaintext).map_err(|e| format!("Read: {}", e))?;
+    Ok(plaintext)
+}

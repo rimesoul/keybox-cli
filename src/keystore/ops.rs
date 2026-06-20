@@ -57,14 +57,67 @@ pub fn unprotect_from_bytes(
 
 // ── Base64 helpers ──────────────────────────────────────────────────
 
-fn b64_encode(data: &[u8]) -> String {
+pub fn b64_encode(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
-fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
+pub fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(s)
         .map_err(|e| format!("Base64 decode: {}", e))
+}
+
+// ── AES key persistence (platform-protected) ────────────────────────
+
+/// Path to the platform-protected AES key file.
+pub fn aes_key_path(base: &Path) -> std::path::PathBuf {
+    base.join("secret").join("aes.key")
+}
+
+/// Store the AES key using the platform protector.
+/// On macOS the key goes to Keychain (with a marker file on disk);
+/// on other platforms it is written to disk directly.
+pub fn store_aes_key(base: &Path, key: &[u8; 32]) -> Result<(), String> {
+    let path = aes_key_path(base);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
+    }
+    store_with_protector(key, &path)
+}
+
+/// Load the AES key bytes from platform-protected storage.
+/// Returns the raw bytes; the caller is responsible for length validation.
+pub fn load_aes_key_bytes(base: &Path) -> Result<Vec<u8>, String> {
+    let path = aes_key_path(base);
+    if !path.exists() {
+        return Err("Keystore not initialized. Run 'keybox init' first.".into());
+    }
+    load_with_protector(&path)
+}
+
+#[cfg(target_os = "macos")]
+fn store_with_protector(data: &[u8], path: &Path) -> Result<(), String> {
+    use crate::protect::MacOSProtector;
+    MacOSProtector::new().protect(data, path)
+}
+
+#[cfg(target_os = "macos")]
+fn load_with_protector(path: &Path) -> Result<Vec<u8>, String> {
+    use crate::protect::MacOSProtector;
+    MacOSProtector::new().unprotect(path)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn store_with_protector(data: &[u8], path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
+    }
+    std::fs::write(path, data).map_err(|e| format!("Failed to write: {}", e))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn load_with_protector(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("Failed to read: {}", e))
 }
 
 // ── CRUD Operations ─────────────────────────────────────────────────

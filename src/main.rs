@@ -8,6 +8,7 @@ use clap::Parser;
 use age::secrecy::ExposeSecret;
 use keybox::cli::{Cli, Command, GenerateArgs, UpdateSub};
 use keybox::crypto::age_ops;
+use keybox::crypto::keyfile;
 use keybox::generate;
 use keybox::interactive;
 use keybox::keystore::ops;
@@ -44,73 +45,16 @@ fn get_keystore_path(base: &Path) -> PathBuf {
     ops::keystore_path(base)
 }
 
-fn aes_key_path(base: &Path) -> PathBuf {
-    base.join("secret").join("aes.key")
-}
-
-// ── Helpers: base64 ─────────────────────────────────────────────────
-
-fn b64_encode(data: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(data)
-}
-
-fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .decode(s)
-        .map_err(|e| format!("Base64 decode: {}", e))
-}
-
-// ── Helpers: AES key persistence (platform-protected) ───────────────
-
-fn store_aes_key(base: &Path, key: &[u8; 32]) -> Result<(), String> {
-    let path = aes_key_path(base);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
-    }
-    store_with_protector(base, key, &path)
-}
+// ── Helper: load AES key as fixed-size array ─────────────────────────
 
 fn load_aes_key(base: &Path) -> Result<[u8; 32], String> {
-    let path = aes_key_path(base);
-    if !path.exists() {
-        return Err("Keystore not initialized. Run 'keybox init' first.".into());
-    }
-    let bytes = load_with_protector(base, &path)?;
+    let bytes = ops::load_aes_key_bytes(base)?;
     if bytes.len() != 32 {
         return Err("AES key has wrong length".into());
     }
     let mut key = [0u8; 32];
     key.copy_from_slice(&bytes);
     Ok(key)
-}
-
-// ── Platform-specific protect/unprotect ─────────────────────────────
-
-#[cfg(target_os = "macos")]
-fn store_with_protector(_base: &Path, data: &[u8], path: &Path) -> Result<(), String> {
-    let protector = MacOSProtector::new();
-    protector.protect(data, path)
-}
-
-#[cfg(target_os = "macos")]
-fn load_with_protector(_base: &Path, path: &Path) -> Result<Vec<u8>, String> {
-    let protector = MacOSProtector::new();
-    protector.unprotect(path)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn store_with_protector(_base: &Path, data: &[u8], path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
-    }
-    fs::write(path, data).map_err(|e| format!("Failed to write: {}", e))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn load_with_protector(_base: &Path, path: &Path) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|e| format!("Failed to read: {}", e))
 }
 
 // ── Helper: parse crypt level string ────────────────────────────────
@@ -139,94 +83,6 @@ fn get_trailing_args() -> Vec<String> {
     } else {
         vec![]
     }
-}
-
-// ── Passphrase-based encryption (for con level) ─────────────────────
-
-fn encrypt_with_passphrase(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
-    use age::Encryptor;
-    let encryptor =
-        Encryptor::with_user_passphrase(age::secrecy::Secret::new(passphrase.to_string()));
-    let mut encrypted = vec![];
-    let mut writer = encryptor
-        .wrap_output(&mut encrypted)
-        .map_err(|_| "Encryption failed".to_string())?;
-    io::Write::write_all(&mut writer, plaintext).map_err(|_| "Write failed".to_string())?;
-    writer.finish().map_err(|_| "Finish failed".to_string())?;
-    Ok(encrypted)
-}
-
-fn decrypt_with_passphrase(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
-    use age::Decryptor;
-    let decryptor =
-        Decryptor::new(encrypted).map_err(|e| format!("Age decrypt: {}", e))?;
-    let decryptor = match decryptor {
-        Decryptor::Passphrase(d) => d,
-        _ => return Err("Not a passphrase-encrypted file".into()),
-    };
-    let mut reader = decryptor
-        .decrypt(&age::secrecy::Secret::new(passphrase.to_string()), None)
-        .map_err(|_| "Wrong passphrase".to_string())?;
-    let mut plaintext = vec![];
-    std::io::Read::read_to_end(&mut reader, &mut plaintext)
-        .map_err(|e| format!("Read: {}", e))?;
-    Ok(plaintext)
-}
-
-// ── Keyfile-based AES-GCM encryption (for top level) ────────────────
-
-fn derive_key_from_file(file_content: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"keybox-top-v1");
-    hasher.update(file_content);
-    let hash = hasher.finalize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&hash);
-    key
-}
-
-fn encrypt_with_aes_gcm_keyfile(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
-    use ring::rand::{SecureRandom, SystemRandom};
-    const NONCE_LEN: usize = 12;
-
-    let rng = SystemRandom::new();
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rng.fill(&mut nonce_bytes)
-        .map_err(|_| "CSPRNG failure".to_string())?;
-
-    let unbound =
-        UnboundKey::new(&AES_256_GCM, key).map_err(|e| format!("Bad key: {}", e))?;
-    let lk = LessSafeKey::new(unbound);
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-
-    let mut in_out = plaintext.to_vec();
-    lk.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
-        .map_err(|e| format!("Encryption failed: {}", e))?;
-
-    let mut output = nonce_bytes.to_vec();
-    output.extend_from_slice(&in_out);
-    Ok(output)
-}
-
-fn decrypt_with_aes_gcm_keyfile(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
-    const NONCE_LEN: usize = 12;
-
-    if encrypted.len() < NONCE_LEN + 16 {
-        return Err("Ciphertext too short".into());
-    }
-    let unbound =
-        UnboundKey::new(&AES_256_GCM, key).map_err(|e| format!("Bad key: {}", e))?;
-    let lk = LessSafeKey::new(unbound);
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    nonce_bytes.copy_from_slice(&encrypted[..NONCE_LEN]);
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-    let mut in_out = encrypted[NONCE_LEN..].to_vec();
-    lk.open_in_place(nonce, Aad::empty(), &mut in_out)
-        .map_err(|_| "Decryption failed — wrong key or corrupted data".to_string())?;
-    Ok(in_out)
 }
 
 // ── Keypair initialization ──────────────────────────────────────────
@@ -280,8 +136,8 @@ fn init_keypair(
         }
         CryptLevel::Con => {
             let pass = passphrase.ok_or("Passphrase required for confidential tier")?;
-            let encrypted = encrypt_with_passphrase(identity_bytes, pass)?;
-            (b64_encode(&encrypted), "passphrase".to_string())
+            let encrypted = age_ops::encrypt_with_passphrase(identity_bytes, pass)?;
+            (ops::b64_encode(&encrypted), "passphrase".to_string())
         }
         CryptLevel::Top => {
             let key_path = key_file.ok_or("Key file required for top-secret tier")?;
@@ -290,9 +146,9 @@ fn init_keypair(
             if file_content.is_empty() {
                 return Err("Key file is empty".into());
             }
-            let aes_key = derive_key_from_file(&file_content);
-            let encrypted = encrypt_with_aes_gcm_keyfile(identity_bytes, &aes_key)?;
-            (b64_encode(&encrypted), "keyfile".to_string())
+            let aes_key = keyfile::derive_key_from_file(&file_content);
+            let encrypted = keyfile::encrypt_with_aes_gcm_keyfile(identity_bytes, &aes_key)?;
+            (ops::b64_encode(&encrypted), "keyfile".to_string())
         }
     };
 
@@ -346,8 +202,8 @@ fn resolve_identity(
         "passphrase" | "con" => {
             let passphrase =
                 interactive::prompt_password("Enter master passphrase for confidential tier: ")?;
-            let encrypted = b64_decode(&keypair.encrypted_private_key)?;
-            let identity_bytes = decrypt_with_passphrase(&encrypted, &passphrase)?;
+            let encrypted = ops::b64_decode(&keypair.encrypted_private_key)?;
+            let identity_bytes = age_ops::decrypt_with_passphrase(&encrypted, &passphrase)?;
             String::from_utf8(identity_bytes)
                 .map_err(|_| "Identity not valid UTF-8".to_string())?
         }
@@ -359,10 +215,10 @@ fn resolve_identity(
             if file_content.is_empty() {
                 return Err("Key file is empty".into());
             }
-            let aes_key_top = derive_key_from_file(&file_content);
-            let encrypted = b64_decode(&keypair.encrypted_private_key)?;
+            let aes_key_top = keyfile::derive_key_from_file(&file_content);
+            let encrypted = ops::b64_decode(&keypair.encrypted_private_key)?;
             let identity_bytes =
-                decrypt_with_aes_gcm_keyfile(&encrypted, &aes_key_top)?;
+                keyfile::decrypt_with_aes_gcm_keyfile(&encrypted, &aes_key_top)?;
             String::from_utf8(identity_bytes)
                 .map_err(|_| "Identity not valid UTF-8".to_string())?
         }
@@ -380,7 +236,7 @@ fn open_keystore(base: &Path) -> Result<([u8; 32], PathBuf), String> {
     if !kp.exists() {
         eprintln!("Initializing keystore...");
         let aes_key = ops::init_store(&kp)?;
-        store_aes_key(base, &aes_key)?;
+        ops::store_aes_key(base, &aes_key)?;
 
         let mut store = ops::load_store(&kp, &aes_key)?;
         init_keypair(&mut store, base, &CryptLevel::Secret, None, None)?;
@@ -428,7 +284,7 @@ fn handle_init(base: &Path, level: Option<&str>) -> Result<(), String> {
     if !kp.exists() {
         // Create keystore fresh with secret tier
         let aes_key = ops::init_store(&kp)?;
-        store_aes_key(base, &aes_key)?;
+        ops::store_aes_key(base, &aes_key)?;
         let mut store = ops::load_store(&kp, &aes_key)?;
         init_keypair(&mut store, base, &CryptLevel::Secret, None, None)?;
         ops::save_store(&kp, &store, &aes_key)?;

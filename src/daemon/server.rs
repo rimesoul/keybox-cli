@@ -3,69 +3,11 @@ use crate::daemon::token::TokenStore;
 use crate::keystore::ops;
 use crate::keystore::schema::KeyStore;
 use crate::crypto::age_ops;
+use crate::crypto::keyfile;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-
-// ── Base64 helpers (mirrors ops.rs private helpers) ──────────────────
-
-fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .decode(s)
-        .map_err(|e| format!("Base64 decode: {}", e))
-}
-
-// ── Passphrase-based decryption (for con level identity) ─────────────
-
-fn decrypt_with_passphrase(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
-    let decryptor = age::Decryptor::new(encrypted)
-        .map_err(|e| format!("Age decrypt: {}", e))?;
-    let decryptor = match decryptor {
-        age::Decryptor::Passphrase(d) => d,
-        _ => return Err("Not a passphrase-encrypted identity".into()),
-    };
-    let mut reader = decryptor
-        .decrypt(&age::secrecy::Secret::new(passphrase.to_string()), None)
-        .map_err(|_| "Wrong passphrase".to_string())?;
-    let mut plaintext = vec![];
-    reader.read_to_end(&mut plaintext)
-        .map_err(|e| format!("Read: {}", e))?;
-    Ok(plaintext)
-}
-
-// ── Keyfile-based AES-GCM decryption (for top level identity) ────────
-
-fn derive_key_from_file(file_content: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"keybox-top-v1");
-    hasher.update(file_content);
-    let hash = hasher.finalize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&hash);
-    key
-}
-
-fn decrypt_with_aes_gcm_keyfile(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
-    const NONCE_LEN: usize = 12;
-
-    if encrypted.len() < NONCE_LEN + 16 {
-        return Err("Identity ciphertext too short".into());
-    }
-    let unbound =
-        UnboundKey::new(&AES_256_GCM, key).map_err(|e| format!("Bad key: {}", e))?;
-    let lk = LessSafeKey::new(unbound);
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    nonce_bytes.copy_from_slice(&encrypted[..NONCE_LEN]);
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-    let mut in_out = encrypted[NONCE_LEN..].to_vec();
-    lk.open_in_place(nonce, Aad::empty(), &mut in_out)
-        .map_err(|_| "Decryption failed — wrong key file or corrupted identity".to_string())?;
-    Ok(in_out)
-}
 
 // ── Secret identity resolution (auto-loaded at startup) ──────────────
 
@@ -109,7 +51,7 @@ impl DaemonState {
         if !keystore_path.exists() {
             return Err("Keystore not initialized. Run 'keybox init' first.".into());
         }
-        let aes_key = load_aes_key(&base)?;
+        let aes_key = ops::load_aes_key_bytes(&base)?;
         let store = ops::load_store(&keystore_path, &aes_key)?;
 
         // Auto-load secret identity (no unlock/token needed)
@@ -171,11 +113,11 @@ impl DaemonState {
                     Some(p) => p,
                     None => return Response::Error("Passphrase required for con level".into()),
                 };
-                let encrypted = match b64_decode(&kp.encrypted_private_key) {
+                let encrypted = match ops::b64_decode(&kp.encrypted_private_key) {
                     Ok(e) => e,
                     Err(e) => return Response::Error(e),
                 };
-                match decrypt_with_passphrase(&encrypted, pp) {
+                match age_ops::decrypt_with_passphrase(&encrypted, pp) {
                     Ok(b) => b,
                     Err(e) => return Response::Error(e),
                 }
@@ -192,12 +134,12 @@ impl DaemonState {
                 if file_content.is_empty() {
                     return Response::Error("Key file is empty".into());
                 }
-                let aes_key = derive_key_from_file(&file_content);
-                let encrypted = match b64_decode(&kp.encrypted_private_key) {
+                let aes_key = keyfile::derive_key_from_file(&file_content);
+                let encrypted = match ops::b64_decode(&kp.encrypted_private_key) {
                     Ok(e) => e,
                     Err(e) => return Response::Error(e),
                 };
-                match decrypt_with_aes_gcm_keyfile(&encrypted, &aes_key) {
+                match keyfile::decrypt_with_aes_gcm_keyfile(&encrypted, &aes_key) {
                     Ok(b) => b,
                     Err(e) => return Response::Error(e),
                 }
@@ -253,7 +195,7 @@ impl DaemonState {
                     )),
                 };
                 // Decrypt the secret
-                let ciphertext = match b64_decode(&cred.secret) {
+                let ciphertext = match ops::b64_decode(&cred.secret) {
                     Ok(c) => c,
                     Err(e) => return Response::Error(e),
                 };
@@ -311,32 +253,6 @@ impl DaemonState {
         self.identities.retain(|k, _| k == "secret");
         Response::Locked
     }
-}
-
-// ── AES key loading (platform-protected) ─────────────────────────────
-
-fn aes_key_path(base: &Path) -> PathBuf {
-    base.join("secret").join("aes.key")
-}
-
-#[cfg(target_os = "macos")]
-fn load_aes_key(base: &Path) -> Result<Vec<u8>, String> {
-    use crate::protect::MacOSProtector;
-    use crate::protect::IdentityProtector;
-    let path = aes_key_path(base);
-    if !path.exists() {
-        return Err("AES key not found. Run 'keybox init' first.".into());
-    }
-    MacOSProtector::new().unprotect(&path)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn load_aes_key(base: &Path) -> Result<Vec<u8>, String> {
-    let path = aes_key_path(base);
-    if !path.exists() {
-        return Err("AES key not found. Run 'keybox init' first.".into());
-    }
-    std::fs::read(&path).map_err(|e| format!("Failed to read AES key: {}", e))
 }
 
 // ── Unix daemon ──────────────────────────────────────────────────────
