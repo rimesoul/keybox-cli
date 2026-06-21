@@ -140,6 +140,15 @@ impl From<KeyboxError> for String {
     }
 }
 
+// ── Catch-all: remaining String errors (from interactive, env_run,  ─
+// ── etc.) can auto-convert to KeyboxError::input.                   ──
+
+impl From<String> for KeyboxError {
+    fn from(s: String) -> Self {
+        KeyboxError::input(s)
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]

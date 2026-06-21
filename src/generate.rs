@@ -1,5 +1,7 @@
 use rand::Rng;
 
+use crate::error::KeyboxError;
+
 const DEFAULT_SYMBOLS: &str = "_!@#$%^&*()-+=[]{};:,.<>?/~";
 const SIMILAR_CHARS: &[char] = &['0', 'O', 'I', 'l', '1'];
 const MAX_LENGTH: usize = 256;
@@ -65,15 +67,15 @@ fn build_charset_inner(
     chars
 }
 
-pub fn generate_password(mut length: usize, charset: &[char]) -> Result<String, String> {
+pub fn generate_password(mut length: usize, charset: &[char]) -> Result<String, KeyboxError> {
     if length == 0 {
-        return Err("length must be at least 1".into());
+        return Err(KeyboxError::input("length must be at least 1"));
     }
     if length > MAX_LENGTH {
         length = MAX_LENGTH;
     }
     if charset.is_empty() {
-        return Err("charset is empty".into());
+        return Err(KeyboxError::input("charset is empty"));
     }
 
     let mut rng = rand::thread_rng();
@@ -102,15 +104,15 @@ pub fn load_wordlist() -> Vec<String> {
         .collect()
 }
 
-pub fn generate_passphrase(mut word_count: usize, wordlist: &[String]) -> Result<String, String> {
+pub fn generate_passphrase(mut word_count: usize, wordlist: &[String]) -> Result<String, KeyboxError> {
     if word_count == 0 {
-        return Err("word count must be at least 1".into());
+        return Err(KeyboxError::input("word count must be at least 1"));
     }
     if word_count > MAX_PASSPHRASE_WORDS {
         word_count = MAX_PASSPHRASE_WORDS;
     }
     if wordlist.is_empty() {
-        return Err("wordlist is empty".into());
+        return Err(KeyboxError::input("wordlist is empty"));
     }
 
     let mut rng = rand::thread_rng();

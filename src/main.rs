@@ -9,6 +9,7 @@ use age::secrecy::ExposeSecret;
 use keybox::cli::{Cli, Command, GenerateArgs, UpdateSub};
 use keybox::crypto::age_ops;
 use keybox::crypto::keyfile;
+use keybox::error::KeyboxError;
 use keybox::generate;
 use keybox::interactive;
 use keybox::keystore::ops;
@@ -20,16 +21,16 @@ use keybox::protect::MacOSProtector;
 
 // ── Helpers: resolve_base, parse_target, keystore paths ─────────────
 
-fn resolve_base(base_opt: Option<&str>) -> Result<PathBuf, String> {
+fn resolve_base(base_opt: Option<&str>) -> Result<PathBuf, KeyboxError> {
     if let Ok(dir) = std::env::var("KEYBOX_CONFIG_DIR") {
         return Ok(PathBuf::from(dir));
     }
     if let Some(b) = base_opt {
         Ok(PathBuf::from(b))
     } else {
-        Ok(dirs::config_dir()
-            .ok_or("Cannot determine config directory")?
-            .join("keybox"))
+        dirs::config_dir()
+            .ok_or_else(|| KeyboxError::input("Cannot determine config directory"))
+            .map(|d| d.join("keybox"))
     }
 }
 
@@ -47,10 +48,10 @@ fn get_keystore_path(base: &Path) -> PathBuf {
 
 // ── Helper: load AES key as fixed-size array ─────────────────────────
 
-fn load_aes_key(base: &Path) -> Result<[u8; 32], String> {
+fn load_aes_key(base: &Path) -> Result<[u8; 32], KeyboxError> {
     let bytes = ops::load_aes_key_bytes(base)?;
     if bytes.len() != 32 {
-        return Err("AES key has wrong length".into());
+        return Err(KeyboxError::crypto("AES key has wrong length"));
     }
     let mut key = [0u8; 32];
     key.copy_from_slice(&bytes);
@@ -65,29 +66,30 @@ fn parse_level(s: Option<&str>) -> CryptLevel {
 
 // ── Helper: copy to clipboard ───────────────────────────────────────
 
-fn copy_to_clipboard(secret: &[u8]) -> Result<(), String> {
+fn copy_to_clipboard(secret: &[u8]) -> Result<(), KeyboxError> {
     let text = std::str::from_utf8(secret)
-        .map_err(|_| "Secret contains non-UTF8 data, cannot copy to clipboard".to_string())?;
+        .map_err(|_| KeyboxError::input("Secret contains non-UTF8 data, cannot copy to clipboard"))?;
     let mut clipboard =
-        arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
+        arboard::Clipboard::new().map_err(|e| KeyboxError::input(format!("Clipboard error: {}", e)))?;
     clipboard
         .set_text(text)
-        .map_err(|e| format!("Clipboard error: {}", e))?;
+        .map_err(|e| KeyboxError::input(format!("Clipboard error: {}", e)))?;
     Ok(())
 }
 
 /// Output a secret (password or token) according to the selected flags.
 /// Priority: --env > --clipboard > --force > stdout warning.
-fn output_secret(secret: &[u8], env: Option<&str>, clipboard: bool, force: bool) -> Result<(), String> {
+fn output_secret(secret: &[u8], env: Option<&str>, clipboard: bool, force: bool) -> Result<(), KeyboxError> {
     if let Some(var_name) = env {
         let trailing = get_trailing_args();
         if trailing.is_empty() {
             io::stdout()
                 .write_all(secret)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| KeyboxError::io("writing secret to stdout", e))?;
             println!();
         } else {
-            let code = keybox::env_run::run_with_env(var_name, secret, &trailing)?;
+            let code = keybox::env_run::run_with_env(var_name, secret, &trailing)
+                .map_err(KeyboxError::input)?;
             process::exit(code);
         }
     } else if clipboard {
@@ -96,7 +98,7 @@ fn output_secret(secret: &[u8], env: Option<&str>, clipboard: bool, force: bool)
     } else if force {
         io::stdout()
             .write_all(secret)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| KeyboxError::io("writing secret to stdout", e))?;
         println!();
     } else {
         eprintln!(
@@ -125,7 +127,7 @@ fn init_keypair(
     level: &CryptLevel,
     passphrase: Option<&str>,
     key_file: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), KeyboxError> {
     let level_str = level.as_str();
 
     if store.key_pairs.contains_key(level_str) {
@@ -166,16 +168,16 @@ fn init_keypair(
             }
         }
         CryptLevel::Con => {
-            let pass = passphrase.ok_or("Passphrase required for confidential tier")?;
+            let pass = passphrase.ok_or_else(|| KeyboxError::input("Passphrase required for confidential tier"))?;
             let encrypted = age_ops::encrypt_with_passphrase(identity_bytes, pass)?;
             (ops::b64_encode(&encrypted), "passphrase".to_string())
         }
         CryptLevel::Top => {
-            let key_path = key_file.ok_or("Key file required for top-secret tier")?;
+            let key_path = key_file.ok_or_else(|| KeyboxError::input("Key file required for top-secret tier"))?;
             let file_content = fs::read(key_path)
                 .map_err(|e| format!("Failed to read key file '{}': {}", key_path, e))?;
             if file_content.is_empty() {
-                return Err("Key file is empty".into());
+                return Err(KeyboxError::input("Key file is empty"));
             }
             let aes_key = keyfile::derive_key_from_file(&file_content);
             let encrypted = keyfile::encrypt_with_aes_gcm_keyfile(identity_bytes, &aes_key)?;
@@ -201,7 +203,7 @@ fn resolve_identity(
     base: &Path,
     aes_key: &[u8],
     level: &str,
-) -> Result<age::x25519::Identity, String> {
+) -> Result<age::x25519::Identity, KeyboxError> {
     let kp = get_keystore_path(base);
     let store = ops::load_store(&kp, aes_key)?;
     let keypair = store
@@ -244,7 +246,7 @@ fn resolve_identity(
             let file_content = fs::read(&key_path_input)
                 .map_err(|e| format!("Failed to read key file '{}': {}", key_path_input, e))?;
             if file_content.is_empty() {
-                return Err("Key file is empty".into());
+                return Err(KeyboxError::input("Key file is empty"));
             }
             let aes_key_top = keyfile::derive_key_from_file(&file_content);
             let encrypted = ops::b64_decode(&keypair.encrypted_private_key)?;
@@ -253,16 +255,16 @@ fn resolve_identity(
             String::from_utf8(identity_bytes)
                 .map_err(|_| "Identity not valid UTF-8".to_string())?
         }
-        _ => return Err(format!("Unknown protector: {}", keypair.protector)),
+        _ => return Err(KeyboxError::not_found("protector", &keypair.protector)),
     };
 
     age::x25519::Identity::from_str(identity_str.trim())
-        .map_err(|e| format!("Failed to parse identity: {}", e))
+        .map_err(|e| KeyboxError::crypto(format!("Failed to parse identity: {}", e)))
 }
 
 // ── Open keystore (auto-create with secret tier if missing) ─────────
 
-fn open_keystore(base: &Path) -> Result<([u8; 32], PathBuf), String> {
+fn open_keystore(base: &Path) -> Result<([u8; 32], PathBuf), KeyboxError> {
     let kp = get_keystore_path(base);
     if !kp.exists() {
         eprintln!("Initializing keystore...");
@@ -286,7 +288,7 @@ fn ensure_level(
     kp: &Path,
     aes_key: &[u8],
     level: &CryptLevel,
-) -> Result<(), String> {
+) -> Result<(), KeyboxError> {
     let store = ops::load_store(kp, aes_key)?;
     if store.key_pairs.contains_key(level.as_str()) {
         return Ok(());
@@ -299,17 +301,16 @@ fn ensure_level(
         ops::save_store(kp, &store, aes_key)?;
         Ok(())
     } else {
-        Err(format!(
-            "Level '{}' not initialized. Run 'keybox init --level {}' first.",
-            level.as_str(),
-            level.as_str()
+        Err(KeyboxError::not_found(
+            format!("level '{}'", level.as_str()),
+            format!("Run 'keybox init --level {}'", level.as_str()),
         ))
     }
 }
 
 // ── Command Handlers ────────────────────────────────────────────────
 
-fn handle_init(base: &Path, level: Option<&str>) -> Result<(), String> {
+fn handle_init(base: &Path, level: Option<&str>) -> Result<(), KeyboxError> {
     let kp = get_keystore_path(base);
 
     if !kp.exists() {
@@ -363,12 +364,12 @@ fn handle_init(base: &Path, level: Option<&str>) -> Result<(), String> {
                 let key_path =
                     interactive::prompt_input("Key file path for top-secret tier: ")?;
                 if key_path.is_empty() {
-                    return Err("Key file path is required for top-secret tier".into());
+                    return Err(KeyboxError::input("Key file path is required for top-secret tier"));
                 }
                 let content = fs::read(&key_path)
                     .map_err(|e| format!("Failed to read key file: {}", e))?;
                 if content.is_empty() {
-                    return Err("Key file is empty".into());
+                    return Err(KeyboxError::input("Key file is empty"));
                 }
                 init_keypair(&mut store, base, cl, None, Some(&key_path))?;
                 println!("Initialized top-secret tier.");
@@ -394,7 +395,7 @@ fn handle_add(
     tags: &[String],
     stdin: bool,
     no_interactive: bool,
-) -> Result<(), String> {
+) -> Result<(), KeyboxError> {
     let (domain, account) = parse_target(target);
     let crypt_level = parse_level(level);
 
@@ -411,13 +412,13 @@ fn handle_add(
             .map_err(|e| format!("Failed to read stdin: {}", e))?;
         input.trim().to_string()
     } else if no_interactive {
-        return Err("--no-interactive requires --stdin to provide the secret".into());
+        return Err(KeyboxError::input("--no-interactive requires --stdin to provide the secret"));
     } else {
         interactive::prompt_password_with_confirm("Secret: ", "Confirm: ")?
     };
 
     if secret.is_empty() {
-        return Err("Secret cannot be empty".into());
+        return Err(KeyboxError::input("Secret cannot be empty"));
     }
 
     let id = ops::add_credential(
@@ -446,7 +447,7 @@ fn handle_get(
     force: bool,
     access_token: Option<&str>,
     no_interactive: bool,
-) -> Result<(), String> {
+) -> Result<(), KeyboxError> {
     // When output flags are used, default to getting the password
     let field = if force || clipboard || env.is_some() {
         field.unwrap_or("password")
@@ -479,18 +480,17 @@ fn handle_get(
             let response = client::get(base, domain, account, "password", Some(token))?;
             let secret: Vec<u8> = match response {
                 Response::Value(s) => s.into_bytes(),
-                Response::Error(msg) => return Err(msg),
-                _ => return Err("Unexpected response from daemon".into()),
+                Response::Error(msg) => return Err(KeyboxError::daemon(msg)),
+                _ => return Err(KeyboxError::daemon("Unexpected response from daemon")),
             };
             output_secret(&secret, env, clipboard, force)?;
             return Ok(());
         }
 
         if no_interactive {
-            return Err(
+            return Err(KeyboxError::input(
                 "Cannot decrypt password in non-interactive mode. Use --no-interactive only for metadata fields."
-                    .into(),
-            );
+            ));
         }
         let level_str = cred.crypt_level.as_str();
         let identity = resolve_identity(base, &aes_key, level_str)?;
@@ -506,7 +506,7 @@ fn handle_get(
         "domain" => println!("{}", cred.domain),
         "account" => println!("{}", cred.account),
         "tags" => println!("{}", cred.tags.join(", ")),
-        _ => return Err(format!("Unknown field: '{}'", field)),
+        _ => return Err(KeyboxError::input(format!("Unknown field: '{}'", field))),
     }
     Ok(())
 }
@@ -516,7 +516,7 @@ fn handle_list(
     format: &str,
     level: Option<&str>,
     tag: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), KeyboxError> {
     let (aes_key, kp) = open_keystore(base)?;
     let creds = ops::list_credentials(&kp, &aes_key, level, tag)?;
 
@@ -541,7 +541,7 @@ fn handle_list(
                 }
             }
         }
-        _ => return Err(format!("Unknown format: '{}'. Use 'json' or 'table'.", format)),
+        _ => return Err(KeyboxError::input(format!("Unknown format: '{}'. Use 'json' or 'table'.", format))),
     }
     Ok(())
 }
@@ -552,7 +552,7 @@ fn handle_edit(
     description: Option<&str>,
     tags: &[String],
     no_interactive: bool,
-) -> Result<(), String> {
+) -> Result<(), KeyboxError> {
     let (domain, account) = parse_target(target);
     let (aes_key, kp) = open_keystore(base)?;
 
@@ -562,10 +562,10 @@ fn handle_edit(
     // For con/top: verify identity before editing
     if level_str == "con" || level_str == "top" {
         if no_interactive {
-            return Err(format!(
+            return Err(KeyboxError::input(format!(
                 "Editing '{}' level credentials requires interactive access. Cannot use --no-interactive.",
                 level_str
-            ));
+            )));
         }
         let _ = resolve_identity(base, &aes_key, level_str)?;
     }
@@ -576,7 +576,7 @@ fn handle_edit(
     Ok(())
 }
 
-fn handle_update_password(base: &Path, target: &str) -> Result<(), String> {
+fn handle_update_password(base: &Path, target: &str) -> Result<(), KeyboxError> {
     let (domain, account) = parse_target(target);
     let (aes_key, kp) = open_keystore(base)?;
 
@@ -601,7 +601,7 @@ fn handle_update_password(base: &Path, target: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn handle_delete(base: &Path, target: &str, no_interactive: bool) -> Result<(), String> {
+fn handle_delete(base: &Path, target: &str, no_interactive: bool) -> Result<(), KeyboxError> {
     let (domain, account) = parse_target(target);
     let (aes_key, kp) = open_keystore(base)?;
 
@@ -611,10 +611,10 @@ fn handle_delete(base: &Path, target: &str, no_interactive: bool) -> Result<(), 
     // For con/top: verify identity first
     if level_str == "con" || level_str == "top" {
         if no_interactive {
-            return Err(format!(
+            return Err(KeyboxError::input(format!(
                 "Deleting '{}' level credentials requires interactive access. Cannot use --no-interactive.",
                 level_str
-            ));
+            )));
         }
         let _ = resolve_identity(base, &aes_key, level_str)?;
     }
@@ -639,8 +639,8 @@ fn handle_delete(base: &Path, target: &str, no_interactive: bool) -> Result<(), 
     Ok(())
 }
 
-fn handle_serve(base: &Path) -> Result<(), String> {
-    keybox::daemon::server::run_daemon(base.to_path_buf())
+fn handle_serve(base: &Path) -> Result<(), KeyboxError> {
+    keybox::daemon::server::run_daemon(base.to_path_buf()).map_err(KeyboxError::daemon)
 }
 
 fn handle_unlock(
@@ -649,7 +649,7 @@ fn handle_unlock(
     timeout: u64,
     clipboard: bool,
     env: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), KeyboxError> {
     use keybox::daemon::client;
     use keybox::daemon::protocol::Response;
 
@@ -661,11 +661,11 @@ fn handle_unlock(
         "top" => {
             let path = interactive::prompt_input("Key file path for top-secret tier: ")?;
             if path.is_empty() {
-                return Err("Key file path is required for top-secret tier".into());
+                return Err(KeyboxError::input("Key file path is required for top-secret tier"));
             }
             (None, Some(path))
         }
-        _ => return Err(format!("Unknown level: '{}'. Use 'con' or 'top'.", level)),
+        _ => return Err(KeyboxError::input(format!("Unknown level: '{}'. Use 'con' or 'top'.", level))),
     };
 
     let response = client::unlock(base, level, passphrase.as_deref(), keyfile_path.as_deref(), timeout)?;
@@ -677,7 +677,7 @@ fn handle_unlock(
             if let Some(var_name) = env {
                 let trailing = get_trailing_args();
                 if trailing.is_empty() {
-                    return Err("no command specified after -- separator".into());
+                    return Err(KeyboxError::input("no command specified after -- separator"));
                 }
                 let code = keybox::env_run::run_with_env(var_name, token.as_bytes(), &trailing)?;
                 process::exit(code);
@@ -689,12 +689,12 @@ fn handle_unlock(
             }
             Ok(())
         }
-        Response::Error(msg) => Err(msg),
-        _ => Err("Unexpected response from daemon".into()),
+        Response::Error(msg) => Err(KeyboxError::daemon(msg)),
+        _ => Err(KeyboxError::daemon("Unexpected response from daemon")),
     }
 }
 
-fn handle_lock(base: &Path) -> Result<(), String> {
+fn handle_lock(base: &Path) -> Result<(), KeyboxError> {
     use keybox::daemon::client;
     use keybox::daemon::protocol::Response;
 
@@ -705,12 +705,12 @@ fn handle_lock(base: &Path) -> Result<(), String> {
             eprintln!("Daemon locked. All tokens revoked.");
             Ok(())
         }
-        Response::Error(msg) => Err(msg),
-        _ => Err("Unexpected response from daemon".into()),
+        Response::Error(msg) => Err(KeyboxError::daemon(msg)),
+        _ => Err(KeyboxError::daemon("Unexpected response from daemon")),
     }
 }
 
-fn handle_stop(base: &Path) -> Result<(), String> {
+fn handle_stop(base: &Path) -> Result<(), KeyboxError> {
     use keybox::daemon::client;
     use keybox::daemon::protocol::Response;
 
@@ -721,12 +721,12 @@ fn handle_stop(base: &Path) -> Result<(), String> {
             eprintln!("Daemon stopped.");
             Ok(())
         }
-        Response::Error(msg) => Err(msg),
-        _ => Err("Unexpected response from daemon".into()),
+        Response::Error(msg) => Err(KeyboxError::daemon(msg)),
+        _ => Err(KeyboxError::daemon("Unexpected response from daemon")),
     }
 }
 
-fn handle_generate(base: &Path, args: &GenerateArgs) -> Result<(), String> {
+fn handle_generate(base: &Path, args: &GenerateArgs) -> Result<(), KeyboxError> {
     // --- Generate the password/passphrase ---
     let password = if args.passphrase {
         let words = match &args.wordlist {
@@ -739,7 +739,7 @@ fn handle_generate(base: &Path, args: &GenerateArgs) -> Result<(), String> {
                     .map(|l| l.to_string())
                     .collect();
                 if w.is_empty() {
-                    return Err("wordlist is empty".into());
+                    return Err(KeyboxError::input("wordlist is empty"));
                 }
                 w
             }
@@ -773,7 +773,7 @@ fn handle_generate(base: &Path, args: &GenerateArgs) -> Result<(), String> {
             generate::default_charset()
         };
         if charset.is_empty() {
-            return Err("at least one character set required".into());
+            return Err(KeyboxError::input("at least one character set required"));
         }
         generate::generate_password(args.length, &charset)?
     };
@@ -805,7 +805,7 @@ fn handle_generate(base: &Path, args: &GenerateArgs) -> Result<(), String> {
     if let Some(var_name) = &args.env {
         let trailing = get_trailing_args();
         if trailing.is_empty() {
-            return Err("no command specified after -- separator".into());
+            return Err(KeyboxError::input("no command specified after -- separator"));
         }
         let code = keybox::env_run::run_with_env(var_name, secret, &trailing)?;
         std::process::exit(code);
@@ -831,7 +831,7 @@ fn main() -> Result<(), String> {
     let base = resolve_base(cli.base.as_deref())?;
 
     match cli.command {
-        Command::Init { level } => handle_init(&base, level.as_deref()),
+        Command::Init { level } => handle_init(&base, level.as_deref())?,
         Command::Add {
             target,
             level,
@@ -847,7 +847,7 @@ fn main() -> Result<(), String> {
             &tags,
             stdin,
             no_interactive,
-        ),
+        )?,
         Command::Get {
             field,
             user,
@@ -865,32 +865,33 @@ fn main() -> Result<(), String> {
             force,
             access_token.as_deref(),
             no_interactive,
-        ),
+        )?,
         Command::List { format, level, tag } => {
-            handle_list(&base, &format, level.as_deref(), tag.as_deref())
+            handle_list(&base, &format, level.as_deref(), tag.as_deref())?
         }
         Command::Edit {
             target,
             description,
             tags,
             no_interactive,
-        } => handle_edit(&base, &target, description.as_deref(), &tags, no_interactive),
+        } => handle_edit(&base, &target, description.as_deref(), &tags, no_interactive)?,
         Command::Update { sub } => match sub {
-            UpdateSub::Password { target } => handle_update_password(&base, &target),
+            UpdateSub::Password { target } => handle_update_password(&base, &target)?,
         },
         Command::Delete {
             target,
             no_interactive,
-        } => handle_delete(&base, &target, no_interactive),
-        Command::Serve => handle_serve(&base),
+        } => handle_delete(&base, &target, no_interactive)?,
+        Command::Serve => handle_serve(&base)?,
         Command::Unlock {
             level,
             timeout,
             clipboard,
             env,
-        } => handle_unlock(&base, &level, timeout, clipboard, env.as_deref()),
-        Command::Lock => handle_lock(&base),
-        Command::Stop => handle_stop(&base),
-        Command::Generate(args) => handle_generate(&base, &args),
-    }
+        } => handle_unlock(&base, &level, timeout, clipboard, env.as_deref())?,
+        Command::Lock => handle_lock(&base)?,
+        Command::Stop => handle_stop(&base)?,
+        Command::Generate(args) => handle_generate(&base, &args)?,
+    };
+    Ok(())
 }
