@@ -2,6 +2,7 @@ use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::rand::{SecureRandom, SystemRandom};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 pub const MAGIC: &[u8; 4] = b"KBOX";
@@ -94,7 +95,11 @@ pub fn save_keystore(path: &Path, json_bytes: &[u8], aes_key: &[u8]) -> Result<(
     buf.extend_from_slice(&ct);
 
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, &buf).map_err(|e| format!("Write tmp: {}", e))?;
+    {
+        let mut f = fs::File::create(&tmp).map_err(|e| format!("Create tmp: {}", e))?;
+        f.write_all(&buf).map_err(|e| format!("Write tmp: {}", e))?;
+        f.sync_all().map_err(|e| format!("Sync tmp: {}", e))?;
+    }
     fs::rename(&tmp, path).map_err(|e| format!("Rename: {}", e))?;
     Ok(())
 }
