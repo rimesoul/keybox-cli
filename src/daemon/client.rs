@@ -1,31 +1,32 @@
 use crate::daemon::protocol::{Request, Response, deserialize_response, serialize_request};
+use crate::error::KeyboxError;
 use std::io::{Read, Write};
 use std::path::Path;
 
 /// Send a request to the daemon and receive a response.
 /// Uses Unix socket on Unix, named pipe on Windows.
 #[cfg(unix)]
-pub fn send_request(base: &Path, request: &Request) -> Result<Response, String> {
+pub fn send_request(base: &Path, request: &Request) -> Result<Response, KeyboxError> {
     let socket_path = base.join("keyboxd.sock");
     let mut stream = std::os::unix::net::UnixStream::connect(&socket_path)
-        .map_err(|e| format!(
+        .map_err(|e| KeyboxError::daemon(format!(
             "Failed to connect to daemon at {}: {}. Is the daemon running? Run 'keybox serve'.",
             socket_path.display(), e
-        ))?;
+        )))?;
     let data = serialize_request(request)?;
     stream
         .write_all(&data)
-        .map_err(|e| format!("Failed to send: {}", e))?;
+        .map_err(|e| KeyboxError::daemon(format!("Failed to send: {}", e)))?;
     let mut buf = vec![0u8; 65536];
     let n = stream
         .read(&mut buf)
-        .map_err(|e| format!("Failed to read: {}", e))?;
+        .map_err(|e| KeyboxError::daemon(format!("Failed to read: {}", e)))?;
     buf.truncate(n);
     deserialize_response(&buf)
 }
 
 #[cfg(windows)]
-pub fn send_request(base: &Path, request: &Request) -> Result<Response, String> {
+pub fn send_request(base: &Path, request: &Request) -> Result<Response, KeyboxError> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::FromRawHandle;
@@ -51,22 +52,22 @@ pub fn send_request(base: &Path, request: &Request) -> Result<Response, String> 
     };
 
     if handle == INVALID_HANDLE_VALUE {
-        return Err(format!(
+        return Err(KeyboxError::daemon(format!(
             "Failed to connect to daemon at {}. Is the daemon running? Run 'keybox serve'.",
             pipe_name
-        ));
+        )));
     }
 
     let mut pipe = unsafe { std::fs::File::from_raw_handle(handle as *mut std::ffi::c_void) };
 
     let data = serialize_request(request)?;
-    pipe.write_all(&data).map_err(|e| format!("Failed to send: {}", e))?;
-    pipe.flush().map_err(|e| format!("Failed to flush: {}", e))?;
+    pipe.write_all(&data).map_err(|e| KeyboxError::daemon(format!("Failed to send: {}", e)))?;
+    pipe.flush().map_err(|e| KeyboxError::daemon(format!("Failed to flush: {}", e)))?;
 
     let mut buf = vec![0u8; 65536];
-    let n = pipe.read(&mut buf).map_err(|e| format!("Failed to read: {}", e))?;
+    let n = pipe.read(&mut buf).map_err(|e| KeyboxError::daemon(format!("Failed to read: {}", e)))?;
     if n == 0 {
-        return Err("Daemon closed connection without response".into());
+        return Err(KeyboxError::daemon("Daemon closed connection without response"));
     }
 
     buf.truncate(n);
@@ -122,7 +123,7 @@ pub fn unlock(
     passphrase: Option<&str>,
     keyfile_path: Option<&str>,
     timeout_minutes: u64,
-) -> Result<Response, String> {
+) -> Result<Response, KeyboxError> {
     send_request(base, &Request::Unlock {
         level: level.to_string(),
         passphrase: passphrase.map(|s| s.to_string()),
@@ -138,7 +139,7 @@ pub fn get(
     account: &str,
     field: &str,
     token: Option<&str>,
-) -> Result<Response, String> {
+) -> Result<Response, KeyboxError> {
     send_request(base, &Request::Get {
         domain: domain.to_string(),
         account: account.to_string(),
@@ -152,7 +153,7 @@ pub fn list(
     base: &Path,
     level: Option<&str>,
     tag: Option<&str>,
-) -> Result<Response, String> {
+) -> Result<Response, KeyboxError> {
     send_request(base, &Request::List {
         level: level.map(|s| s.to_string()),
         tag: tag.map(|s| s.to_string()),
@@ -160,16 +161,16 @@ pub fn list(
 }
 
 /// Send a Lock request to the daemon.
-pub fn lock(base: &Path) -> Result<Response, String> {
+pub fn lock(base: &Path) -> Result<Response, KeyboxError> {
     send_request(base, &Request::Lock)
 }
 
 /// Send a Ping request to check daemon health.
-pub fn ping(base: &Path) -> Result<Response, String> {
+pub fn ping(base: &Path) -> Result<Response, KeyboxError> {
     send_request(base, &Request::Ping)
 }
 
 /// Send a Stop request to shut down the daemon.
-pub fn stop(base: &Path) -> Result<Response, String> {
+pub fn stop(base: &Path) -> Result<Response, KeyboxError> {
     send_request(base, &Request::Stop)
 }

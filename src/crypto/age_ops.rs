@@ -2,6 +2,8 @@ use age::{Decryptor, Encryptor};
 use age::x25519::{Identity, Recipient};
 use std::io::{Read, Write};
 
+use crate::error::KeyboxError;
+
 /// Generate a fresh x25519 keypair for age encryption.
 pub fn generate_keypair() -> (Identity, Recipient) {
     let identity = Identity::generate();
@@ -51,32 +53,34 @@ pub fn decrypt_with_identity(
 // ── Passphrase-based encryption (for confidential level identity) ────
 
 /// Encrypt plaintext using an age passphrase (scrypt-based).
-pub fn encrypt_with_passphrase(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
+pub fn encrypt_with_passphrase(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, KeyboxError> {
     let encryptor =
         Encryptor::with_user_passphrase(age::secrecy::Secret::new(passphrase.to_string()));
     let mut encrypted = vec![];
     let mut writer = encryptor
         .wrap_output(&mut encrypted)
-        .map_err(|_| "Encryption failed".to_string())?;
-    Write::write_all(&mut writer, plaintext).map_err(|_| "Write failed".to_string())?;
+        .map_err(|_| KeyboxError::crypto("Encryption failed"))?;
+    Write::write_all(&mut writer, plaintext)
+        .map_err(|_| KeyboxError::crypto("Write failed"))?;
     writer
         .finish()
-        .map_err(|_| "Finish failed".to_string())?;
+        .map_err(|_| KeyboxError::crypto("Finish failed"))?;
     Ok(encrypted)
 }
 
 /// Decrypt ciphertext that was encrypted with an age passphrase.
-pub fn decrypt_with_passphrase(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
+pub fn decrypt_with_passphrase(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>, KeyboxError> {
     let decryptor =
-        Decryptor::new(encrypted).map_err(|e| format!("Age decrypt: {}", e))?;
+        Decryptor::new(encrypted).map_err(|e| KeyboxError::crypto(format!("Age decrypt: {}", e)))?;
     let decryptor = match decryptor {
         Decryptor::Passphrase(d) => d,
-        _ => return Err("Not a passphrase-encrypted file".into()),
+        _ => return Err(KeyboxError::crypto("Not a passphrase-encrypted file")),
     };
     let mut reader = decryptor
         .decrypt(&age::secrecy::Secret::new(passphrase.to_string()), None)
-        .map_err(|_| "Wrong passphrase".to_string())?;
+        .map_err(|_| KeyboxError::crypto("Wrong passphrase"))?;
     let mut plaintext = vec![];
-    Read::read_to_end(&mut reader, &mut plaintext).map_err(|e| format!("Read: {}", e))?;
+    Read::read_to_end(&mut reader, &mut plaintext)
+        .map_err(|e| KeyboxError::crypto(format!("Read: {}", e)))?;
     Ok(plaintext)
 }

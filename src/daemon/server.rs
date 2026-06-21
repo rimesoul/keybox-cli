@@ -119,7 +119,7 @@ impl DaemonState {
                 };
                 match age_ops::decrypt_with_passphrase(&encrypted, pp) {
                     Ok(b) => b,
-                    Err(e) => return Response::Error(e),
+                    Err(e) => return Response::Error(e.to_string()),
                 }
             }
             "top" => {
@@ -141,7 +141,7 @@ impl DaemonState {
                 };
                 match keyfile::decrypt_with_aes_gcm_keyfile(&encrypted, &aes_key) {
                     Ok(b) => b,
-                    Err(e) => return Response::Error(e),
+                    Err(e) => return Response::Error(e.to_string()),
                 }
             }
             _ => return Response::Error(format!("Unknown level: {}", level)),
@@ -183,7 +183,7 @@ impl DaemonState {
                         None => return Response::Error("Token required for con/top access".into()),
                     };
                     if let Err(e) = self.tokens.validate(t, level_str) {
-                        return Response::Error(e);
+                        return Response::Error(e.to_string());
                     }
                 }
                 // Get identity for decryption
@@ -284,7 +284,7 @@ pub fn run_daemon(base: PathBuf) -> Result<(), String> {
                         buf.truncate(n);
                         let response = handle_raw_request(&buf, &mut state);
                         let resp_data = serialize_response(&response).unwrap_or_else(|e| {
-                            serialize_response(&Response::Error(e)).unwrap()
+                            serialize_response(&Response::Error(e.to_string())).unwrap()
                         });
                         let _ = stream.write_all(&resp_data);
                     }
@@ -369,7 +369,7 @@ pub fn run_daemon(base: PathBuf) -> Result<(), String> {
             buf.truncate(n);
             let response = handle_raw_request(&buf, &mut state);
             let resp_data = serialize_response(&response).unwrap_or_else(|e| {
-                serialize_response(&Response::Error(e)).unwrap()
+                serialize_response(&Response::Error(e.to_string())).unwrap()
             });
             let _ = pipe.write_all(&resp_data);
             let _ = pipe.flush();
@@ -388,7 +388,7 @@ pub fn run_daemon(base: PathBuf) -> Result<(), String> {
 fn handle_raw_request(data: &[u8], state: &mut DaemonState) -> Response {
     let request = match deserialize_request(data) {
         Ok(req) => req,
-        Err(e) => return Response::Error(e),
+        Err(e) => return Response::Error(e.to_string()),
     };
     state.handle_request(request)
 }

@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::time::{SystemTime, Duration};
 use base64::Engine;
 
+use crate::error::KeyboxError;
+
 #[derive(Debug, Clone)]
 pub struct TokenData {
     pub scope: String,         // "con" or "top"
@@ -31,20 +33,20 @@ impl TokenStore {
 
     /// Validate a token against a required scope. Returns Ok(scope) if valid,
     /// or an error message if invalid, expired, or insufficient scope.
-    pub fn validate(&self, token: &str, required_scope: &str) -> Result<String, String> {
+    pub fn validate(&self, token: &str, required_scope: &str) -> Result<String, KeyboxError> {
         let data = self.tokens.get(token)
-            .ok_or("Invalid token")?;
+            .ok_or_else(|| KeyboxError::token("invalid"))?;
 
         if SystemTime::now() > data.expires_at {
-            return Err("Token expired. Run keybox unlock.".into());
+            return Err(KeyboxError::token("expired. Run keybox unlock."));
         }
 
         // Exact scope match required — no inheritance
         if data.scope != required_scope {
-            return Err(format!(
-                "Token scope insufficient. Required: {}, have: {}",
+            return Err(KeyboxError::token(format!(
+                "scope insufficient. Required: {}, have: {}",
                 required_scope, data.scope
-            ));
+            )));
         }
 
         Ok(data.scope.clone())

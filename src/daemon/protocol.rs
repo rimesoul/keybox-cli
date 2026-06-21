@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::error::KeyboxError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
@@ -47,20 +48,20 @@ pub enum Response {
     Error(String),
 }
 
-pub fn serialize_request(req: &Request) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(req).map_err(|e| format!("Serialize error: {}", e))
+pub fn serialize_request(req: &Request) -> Result<Vec<u8>, KeyboxError> {
+    serde_json::to_vec(req).map_err(|e| KeyboxError::serialization("JSON serialize", e))
 }
 
-pub fn deserialize_request(data: &[u8]) -> Result<Request, String> {
-    serde_json::from_slice(data).map_err(|e| format!("Deserialize error: {}", e))
+pub fn deserialize_request(data: &[u8]) -> Result<Request, KeyboxError> {
+    serde_json::from_slice(data).map_err(|e| KeyboxError::serialization("JSON deserialize", e))
 }
 
-pub fn serialize_response(resp: &Response) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(resp).map_err(|e| format!("Serialize error: {}", e))
+pub fn serialize_response(resp: &Response) -> Result<Vec<u8>, KeyboxError> {
+    serde_json::to_vec(resp).map_err(|e| KeyboxError::serialization("JSON serialize", e))
 }
 
-pub fn deserialize_response(data: &[u8]) -> Result<Response, String> {
-    serde_json::from_slice(data).map_err(|e| format!("Deserialize error: {}", e))
+pub fn deserialize_response(data: &[u8]) -> Result<Response, KeyboxError> {
+    serde_json::from_slice(data).map_err(|e| KeyboxError::serialization("JSON deserialize", e))
 }
 
 #[cfg(test)]
