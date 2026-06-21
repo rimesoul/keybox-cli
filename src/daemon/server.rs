@@ -115,7 +115,7 @@ impl DaemonState {
                 };
                 let encrypted = match ops::b64_decode(&kp.encrypted_private_key) {
                     Ok(e) => e,
-                    Err(e) => return Response::Error(e),
+                    Err(e) => return Response::Error(e.to_string()),
                 };
                 match age_ops::decrypt_with_passphrase(&encrypted, pp) {
                     Ok(b) => b,
@@ -137,7 +137,7 @@ impl DaemonState {
                 let aes_key = keyfile::derive_key_from_file(&file_content);
                 let encrypted = match ops::b64_decode(&kp.encrypted_private_key) {
                     Ok(e) => e,
-                    Err(e) => return Response::Error(e),
+                    Err(e) => return Response::Error(e.to_string()),
                 };
                 match keyfile::decrypt_with_aes_gcm_keyfile(&encrypted, &aes_key) {
                     Ok(b) => b,
@@ -197,7 +197,7 @@ impl DaemonState {
                 // Decrypt the secret
                 let ciphertext = match ops::b64_decode(&cred.secret) {
                     Ok(c) => c,
-                    Err(e) => return Response::Error(e),
+                    Err(e) => return Response::Error(e.to_string()),
                 };
                 let plaintext = match age_ops::decrypt_with_identity(identity, &ciphertext) {
                     Ok(p) => p,

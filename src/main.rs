@@ -797,17 +797,7 @@ fn handle_generate(base: &Path, args: &GenerateArgs) -> Result<(), String> {
             &level,
             args.description.as_deref(),
             &args.tags,
-        )
-        .map_err(|e| {
-            if e.contains("already exists") {
-                format!(
-                    "Credential {} already exists. Delete it first or use a different name.",
-                    KeyStore::credential_key(domain, account)
-                )
-            } else {
-                e
-            }
-        })?;
+        )?;
         println!("Saved to {}/{}", domain, account);
     }
 

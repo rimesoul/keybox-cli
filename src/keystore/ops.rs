@@ -1,22 +1,24 @@
 use super::format;
 use super::schema::{chrono_now_iso, Credential, CryptLevel, KeyStore};
 use crate::crypto::age_ops;
+use crate::error::KeyboxError;
 use crate::protect::IdentityProtector;
 use base64::Engine;
 use std::path::Path;
 
 /// Load and parse the keystore file
-pub fn load_store(path: &Path, aes_key: &[u8]) -> Result<KeyStore, String> {
+pub fn load_store(path: &Path, aes_key: &[u8]) -> Result<KeyStore, KeyboxError> {
     let json_bytes = format::load_keystore(path, aes_key)?;
     serde_json::from_slice(&json_bytes)
-        .map_err(|e| format!("Failed to parse keystore JSON: {}", e))
+        .map_err(|e| KeyboxError::serialization("JSON parse", e))
 }
 
 /// Serialize and atomically save the keystore
-pub fn save_store(path: &Path, store: &KeyStore, aes_key: &[u8]) -> Result<(), String> {
+pub fn save_store(path: &Path, store: &KeyStore, aes_key: &[u8]) -> Result<(), KeyboxError> {
     let json_bytes = serde_json::to_vec(store)
-        .map_err(|e| format!("Failed to serialize keystore: {}", e))?;
-    format::save_keystore(path, &json_bytes, aes_key)
+        .map_err(|e| KeyboxError::serialization("JSON serialize", e))?;
+    format::save_keystore(path, &json_bytes, aes_key)?;
+    Ok(())
 }
 
 /// Determine the keystore file path for the given base config directory
@@ -31,14 +33,12 @@ pub fn protect_to_bytes(
     protector: &dyn IdentityProtector,
     data: &[u8],
     marker_base: &Path,
-) -> Result<Vec<u8>, String> {
-    // Create a temp file for the protector to write to
+) -> Result<Vec<u8>, KeyboxError> {
     let tmp = marker_base.with_extension("protect.tmp");
-    protector.protect(data, &tmp)?;
-
-    // Read back the protected blob (or marker content on macOS)
+    protector.protect(data, &tmp)
+        .map_err(KeyboxError::crypto)?;
     std::fs::read(&tmp)
-        .map_err(|e| format!("Failed to read protected data: {}", e))
+        .map_err(|e| KeyboxError::io("reading protected data", e))
 }
 
 /// Unprotect (decrypt) data previously protected with `protect_to_bytes`.
@@ -47,12 +47,11 @@ pub fn unprotect_from_bytes(
     protector: &dyn IdentityProtector,
     encrypted_bytes: &[u8],
     marker_path: &Path,
-) -> Result<Vec<u8>, String> {
-    // Write encrypted bytes to temp file so protector can read it
+) -> Result<Vec<u8>, KeyboxError> {
     std::fs::write(marker_path, encrypted_bytes)
-        .map_err(|e| format!("Failed to write temp identity file: {}", e))?;
-
+        .map_err(|e| KeyboxError::io("writing temp identity", e))?;
     protector.unprotect(marker_path)
+        .map_err(KeyboxError::crypto)
 }
 
 // ── Base64 helpers ──────────────────────────────────────────────────
@@ -61,10 +60,10 @@ pub fn b64_encode(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
-pub fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
+pub fn b64_decode(s: &str) -> Result<Vec<u8>, KeyboxError> {
     base64::engine::general_purpose::STANDARD
         .decode(s)
-        .map_err(|e| format!("Base64 decode: {}", e))
+        .map_err(|e| KeyboxError::serialization("Base64 decode", e))
 }
 
 // ── AES key persistence (platform-protected) ────────────────────────
@@ -77,86 +76,96 @@ pub fn aes_key_path(base: &Path) -> std::path::PathBuf {
 /// Store the AES key using the platform protector.
 /// On macOS the key goes to Keychain (with a marker file on disk);
 /// on other platforms it is written to disk directly.
-pub fn store_aes_key(base: &Path, key: &[u8; 32]) -> Result<(), String> {
+pub fn store_aes_key(base: &Path, key: &[u8; 32]) -> Result<(), KeyboxError> {
     let path = aes_key_path(base);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| KeyboxError::io("creating config dir", e))?;
     }
     store_with_protector(key, &path)
 }
 
 /// Load the AES key bytes from platform-protected storage.
 /// Returns the raw bytes; the caller is responsible for length validation.
-pub fn load_aes_key_bytes(base: &Path) -> Result<Vec<u8>, String> {
+pub fn load_aes_key_bytes(base: &Path) -> Result<Vec<u8>, KeyboxError> {
     let path = aes_key_path(base);
     if !path.exists() {
-        return Err("Keystore not initialized. Run 'keybox init' first.".into());
+        return Err(KeyboxError::not_found(
+            "keystore",
+            "Run 'keybox init' first",
+        ));
     }
     load_with_protector(&path)
 }
 
 #[cfg(target_os = "macos")]
-fn store_with_protector(data: &[u8], path: &Path) -> Result<(), String> {
+fn store_with_protector(data: &[u8], path: &Path) -> Result<(), KeyboxError> {
     use crate::protect::MacOSProtector;
-    MacOSProtector::new().protect(data, path)
+    MacOSProtector::new().protect(data, path).map_err(KeyboxError::crypto)
 }
 
 #[cfg(target_os = "macos")]
-fn load_with_protector(path: &Path) -> Result<Vec<u8>, String> {
+fn load_with_protector(path: &Path) -> Result<Vec<u8>, KeyboxError> {
     use crate::protect::MacOSProtector;
-    MacOSProtector::new().unprotect(path)
+    MacOSProtector::new().unprotect(path).map_err(KeyboxError::crypto)
 }
 
 #[cfg(target_os = "linux")]
-fn store_with_protector(data: &[u8], path: &Path) -> Result<(), String> {
+fn store_with_protector(data: &[u8], path: &Path) -> Result<(), KeyboxError> {
     use crate::protect::LinuxProtector;
-    LinuxProtector::new().protect(data, path)
+    LinuxProtector::new().protect(data, path).map_err(KeyboxError::crypto)
 }
 
 #[cfg(target_os = "linux")]
-fn load_with_protector(path: &Path) -> Result<Vec<u8>, String> {
+fn load_with_protector(path: &Path) -> Result<Vec<u8>, KeyboxError> {
     use crate::protect::LinuxProtector;
-    LinuxProtector::new().unprotect(path)
+    LinuxProtector::new().unprotect(path).map_err(KeyboxError::crypto)
 }
 
 #[cfg(target_os = "windows")]
-fn store_with_protector(data: &[u8], path: &Path) -> Result<(), String> {
+fn store_with_protector(data: &[u8], path: &Path) -> Result<(), KeyboxError> {
     use crate::protect::DpapiProtector;
-    DpapiProtector::new().protect(data, path)
+    DpapiProtector::new().protect(data, path).map_err(KeyboxError::crypto)
 }
 
 #[cfg(target_os = "windows")]
-fn load_with_protector(path: &Path) -> Result<Vec<u8>, String> {
+fn load_with_protector(path: &Path) -> Result<Vec<u8>, KeyboxError> {
     use crate::protect::DpapiProtector;
-    DpapiProtector::new().unprotect(path)
+    DpapiProtector::new().unprotect(path).map_err(KeyboxError::crypto)
 }
 
 // Plaintext fallback for platforms without a native protector.
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn store_with_protector(data: &[u8], path: &Path) -> Result<(), String> {
+fn store_with_protector(data: &[u8], path: &Path) -> Result<(), KeyboxError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| KeyboxError::io("creating config dir", e))?;
     }
-    std::fs::write(path, data).map_err(|e| format!("Failed to write: {}", e))
+    std::fs::write(path, data)
+        .map_err(|e| KeyboxError::io("writing protected file", e))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn load_with_protector(path: &Path) -> Result<Vec<u8>, String> {
-    std::fs::read(path).map_err(|e| format!("Failed to read: {}", e))
+fn load_with_protector(path: &Path) -> Result<Vec<u8>, KeyboxError> {
+    std::fs::read(path)
+        .map_err(|e| KeyboxError::io("reading protected file", e))
 }
 
 // ── CRUD Operations ─────────────────────────────────────────────────
 
 /// Initialize a new keystore file. Creates an empty KeyStore, encrypts it,
 /// and writes it atomically. Returns the outer AES key.
-pub fn init_store(path: &Path) -> Result<[u8; 32], String> {
+pub fn init_store(path: &Path) -> Result<[u8; 32], KeyboxError> {
     if path.exists() {
-        return Err("Keystore already exists".into());
+        return Err(KeyboxError::not_found(
+            "new keystore",
+            "keystore already exists at this path",
+        ));
     }
     let aes_key = format::generate_aes_key()?;
     let store = KeyStore::empty();
     let json = serde_json::to_vec(&store)
-        .map_err(|e| format!("Serialize error: {}", e))?;
+        .map_err(|e| KeyboxError::serialization("JSON serialize", e))?;
     format::save_keystore(path, &json, &aes_key)?;
     Ok(aes_key)
 }
@@ -173,31 +182,33 @@ pub fn add_credential(
     crypt_level: &CryptLevel,
     description: Option<&str>,
     tags: &[String],
-) -> Result<String, String> {
+) -> Result<String, KeyboxError> {
     let mut store = load_store(path, aes_key)?;
     let key = KeyStore::credential_key(domain, account);
 
     if store.credentials.contains_key(&key) {
-        return Err(format!("Credential already exists: {}", key));
+        return Err(KeyboxError::input(format!(
+            "credential {} already exists. Delete it first or use a different name.",
+            key
+        )));
     }
 
     let level_str = crypt_level.as_str();
-    let kp = store.key_pairs.get(level_str).ok_or_else(|| {
-        format!(
-            "Level '{}' not initialized. Run 'keybox init --level {}'",
-            level_str, level_str
-        )
-    })?;
+    let kp = store
+        .key_pairs
+        .get(level_str)
+        .ok_or_else(|| KeyboxError::not_found(
+            format!("level '{}'", level_str),
+            format!("Run 'keybox init --level {}'", level_str),
+        ))?;
 
-    // Parse the age recipient from the stored public key string
     let recipient: age::x25519::Recipient = kp
         .public_key
         .parse()
-        .map_err(|e| format!("Invalid age public key: {}", e))?;
+        .map_err(|e| KeyboxError::crypto(format!("Invalid age public key: {}", e)))?;
 
-    // Encrypt the plaintext secret with age
     let ciphertext = age_ops::encrypt_with_recipient(&recipient, plaintext_secret.as_bytes())
-        .map_err(|e| format!("Age encryption failed: {}", e))?;
+        .map_err(|e| KeyboxError::crypto(format!("Age encryption failed: {}", e)))?;
     let secret = b64_encode(&ciphertext);
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -228,14 +239,14 @@ pub fn get_credential(
     aes_key: &[u8],
     domain: &str,
     account: &str,
-) -> Result<Credential, String> {
+) -> Result<Credential, KeyboxError> {
     let store = load_store(path, aes_key)?;
     let key = KeyStore::credential_key(domain, account);
     store
         .credentials
         .get(&key)
         .cloned()
-        .ok_or_else(|| format!("Credential not found: {}", key))
+        .ok_or_else(|| KeyboxError::not_found("credential", &key))
 }
 
 /// Decrypt and return the secret value for a credential.
@@ -247,11 +258,11 @@ pub fn get_password(
     domain: &str,
     account: &str,
     identity: &age::x25519::Identity,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, KeyboxError> {
     let cred = get_credential(path, aes_key, domain, account)?;
     let ciphertext = b64_decode(&cred.secret)?;
     age_ops::decrypt_with_identity(identity, &ciphertext)
-        .map_err(|e| format!("Age decryption failed: {}", e))
+        .map_err(|e| KeyboxError::crypto(format!("Age decryption failed: {}", e)))
 }
 
 /// List all credentials. The `secret` field is replaced with "<masked>".
@@ -261,7 +272,7 @@ pub fn list_credentials(
     aes_key: &[u8],
     filter_level: Option<&str>,
     filter_tag: Option<&str>,
-) -> Result<Vec<Credential>, String> {
+) -> Result<Vec<Credential>, KeyboxError> {
     let store = load_store(path, aes_key)?;
     let mut results: Vec<Credential> = store
         .credentials
@@ -292,13 +303,13 @@ pub fn edit_credential(
     account: &str,
     description: Option<&str>,
     tags: Option<&[String]>,
-) -> Result<(), String> {
+) -> Result<(), KeyboxError> {
     let mut store = load_store(path, aes_key)?;
     let key = KeyStore::credential_key(domain, account);
     let cred = store
         .credentials
         .get_mut(&key)
-        .ok_or_else(|| format!("Credential not found: {}", key))?;
+        .ok_or_else(|| KeyboxError::not_found("credential", &key))?;
 
     if let Some(d) = description {
         cred.description = Some(d.to_string());
@@ -316,11 +327,11 @@ pub fn delete_credential(
     aes_key: &[u8],
     domain: &str,
     account: &str,
-) -> Result<(), String> {
+) -> Result<(), KeyboxError> {
     let mut store = load_store(path, aes_key)?;
     let key = KeyStore::credential_key(domain, account);
     if store.credentials.remove(&key).is_none() {
-        return Err(format!("Credential not found: {}", key));
+        return Err(KeyboxError::not_found("credential", &key));
     }
     save_store(path, &store, aes_key)
 }
@@ -335,36 +346,37 @@ pub fn update_password(
     old_plaintext: &str,
     new_plaintext: &str,
     identity: &age::x25519::Identity,
-) -> Result<(), String> {
+) -> Result<(), KeyboxError> {
     let mut store = load_store(path, aes_key)?;
     let key = KeyStore::credential_key(domain, account);
     let cred = store
         .credentials
         .get_mut(&key)
-        .ok_or_else(|| format!("Credential not found: {}", key))?;
+        .ok_or_else(|| KeyboxError::not_found("credential", &key))?;
 
     let level_str = cred.crypt_level.as_str();
 
-    // Verify old password by decrypting current secret
     let ciphertext = b64_decode(&cred.secret)?;
     let decrypted = age_ops::decrypt_with_identity(identity, &ciphertext)
-        .map_err(|_| "Current password is incorrect".to_string())?;
+        .map_err(|_| KeyboxError::crypto("Current password is incorrect"))?;
     if decrypted != old_plaintext.as_bytes() {
-        return Err("Current password is incorrect".into());
+        return Err(KeyboxError::crypto("Current password is incorrect"));
     }
 
-    // Re-encrypt with new password using the same recipient
     let kp = store
         .key_pairs
         .get(level_str)
-        .ok_or_else(|| format!("Level '{}' key pair missing", level_str))?;
+        .ok_or_else(|| KeyboxError::not_found(
+            format!("level '{}' key pair", level_str),
+            "re-init the keystore level",
+        ))?;
     let recipient: age::x25519::Recipient = kp
         .public_key
         .parse()
-        .map_err(|e| format!("Invalid age public key: {}", e))?;
+        .map_err(|e| KeyboxError::crypto(format!("Invalid age public key: {}", e)))?;
     let new_secret = b64_encode(
         &age_ops::encrypt_with_recipient(&recipient, new_plaintext.as_bytes())
-            .map_err(|e| format!("Encrypt failed: {}", e))?,
+            .map_err(|e| KeyboxError::crypto(format!("Encrypt failed: {}", e)))?,
     );
 
     cred.secret = new_secret;

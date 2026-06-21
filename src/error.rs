@@ -131,6 +131,15 @@ impl KeyboxError {
     }
 }
 
+// ── Temporary: allows main.rs / server.rs to use ? while they still ─
+// ── return Result<_, String>. Remove once Step 4 is complete.       ──
+
+impl From<KeyboxError> for String {
+    fn from(e: KeyboxError) -> Self {
+        e.to_string()
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
