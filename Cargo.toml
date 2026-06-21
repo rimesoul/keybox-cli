@@ -19,6 +19,7 @@ atty = "0.2"
 base64 = "0.21"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+thiserror = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }

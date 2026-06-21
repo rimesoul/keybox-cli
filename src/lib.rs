@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod crypto;
+pub mod error;
 pub mod generate;
 pub mod daemon;
 pub mod env_run;
