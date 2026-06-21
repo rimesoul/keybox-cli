@@ -157,13 +157,7 @@ fn init_keypair(
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let id_path = base.join("secret").join("identity");
-                if let Some(parent) = id_path.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|e| format!("Failed to create dir: {}", e))?;
-                }
-                fs::write(&id_path, identity_bytes)
-                    .map_err(|e| format!("Failed to write: {}", e))?;
+                ops::store_secret_identity(base, identity_bytes)?;
                 (String::new(), "file".to_string())
             }
         }
@@ -225,9 +219,7 @@ fn resolve_identity(
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let id_path = base.join("secret").join("identity");
-                let identity_bytes = fs::read(&id_path)
-                    .map_err(|e| format!("Failed to read identity: {}", e))?;
+                let identity_bytes = ops::load_secret_identity(base)?;
                 String::from_utf8(identity_bytes)
                     .map_err(|_| "Identity not valid UTF-8".to_string())?
             }

@@ -98,6 +98,22 @@ pub fn load_aes_key_bytes(base: &Path) -> Result<Vec<u8>, KeyboxError> {
     load_with_protector(&path)
 }
 
+/// Store the secret-level age identity using the platform protector.
+pub fn store_secret_identity(base: &Path, identity_bytes: &[u8]) -> Result<(), KeyboxError> {
+    let path = base.join("secret").join("identity");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| KeyboxError::io("creating config dir", e))?;
+    }
+    store_with_protector(identity_bytes, &path)
+}
+
+/// Load the secret-level age identity from platform-protected storage.
+pub fn load_secret_identity(base: &Path) -> Result<Vec<u8>, KeyboxError> {
+    let path = base.join("secret").join("identity");
+    load_with_protector(&path)
+}
+
 #[cfg(target_os = "macos")]
 fn store_with_protector(data: &[u8], path: &Path) -> Result<(), KeyboxError> {
     use crate::protect::MacOSProtector;

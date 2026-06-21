@@ -24,9 +24,7 @@ fn resolve_secret_identity(base: &Path) -> Result<age::x25519::Identity, String>
 
 #[cfg(not(target_os = "macos"))]
 fn resolve_secret_identity(base: &Path) -> Result<age::x25519::Identity, String> {
-    let id_path = base.join("secret").join("identity");
-    let identity_bytes = std::fs::read(&id_path)
-        .map_err(|e| format!("Failed to read secret identity: {}", e))?;
+    let identity_bytes = ops::load_secret_identity(base)?;
     let identity_str = String::from_utf8_lossy(&identity_bytes);
     age::x25519::Identity::from_str(identity_str.trim())
         .map_err(|e| format!("Failed to parse secret identity: {}", e))
