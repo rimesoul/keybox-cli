@@ -29,8 +29,9 @@ Status: Draft
 | 8 | daemon 不感知外部 keystore 修改 | 非 daemon 方式修改后 daemon 不会重载 | 中 |
 | 9 | daemon 闲置超时自动 lock | 当前只有手动 `keybox lock` | 小 |
 | 10 | `update password` 非交互模式 | 当前不支持 `--no-interactive` | 小 |
-| 11 | `protect_to_bytes`/`unprotect_from_bytes` 清理 | macOS 路径问题已绕开，这些函数 unused | 小 |
-| 12 | Context-aware credential suggestions | 根据上下文输出最适合的凭据 | 大 |
+| 11 | unlock ROT retry（3次） | spec 设计要求，当前只单次尝试 | 小 |
+| 12 | `protect_to_bytes`/`unprotect_from_bytes` 清理 | macOS 路径问题已绕开，这些函数 unused | 小 |
+| 13 | Context-aware credential suggestions | 根据上下文输出最适合的凭据 | 大 |
 | 13 | Environment-based auto-detection | 优先级逻辑 | 大 |
 | 14 | TLS safe credential retrieval | 确保安全传输 | 大 |
 | 15 | Third-party plugin support | 扩展集成 | 大 |

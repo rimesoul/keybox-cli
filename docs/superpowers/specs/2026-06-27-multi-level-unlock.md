@@ -1,7 +1,16 @@
 # Design Spec: Multi-Level Daemon Unlock
 
 Date: 2026-06-27
+Status: ✅ Implemented (commit: 025c2f6)
 Depends on: `docs/superpowers/specs/2026-06-18-keybox-metadata-store-design.md` (Section 6)
+
+### Implementation Notes
+
+- ROT retry (3 attempts, Section 3.6) is **deferred** — currently single attempt.
+  Validation happens on the daemon side; if ROT is incorrect, daemon returns an error
+  which is displayed to the user.
+- ROT input validation (file exists, non-empty) was moved to daemon-side for consistency
+  with passphrase validation.
 
 ---
 
