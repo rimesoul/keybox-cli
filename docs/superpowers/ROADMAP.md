@@ -9,7 +9,7 @@ Status: Draft
 
 | # | 项 | 说明 | 范围 |
 |---|-----|------|------|
-| 1 | `keybox unlock --level con,top` 多级别解锁 | 当前只接受单个 level，逗号分隔报错 | 小 |
+| 1 | `keybox unlock --level con,top` 多级别解锁 | 进行中 — spec: `docs/superpowers/specs/2026-06-27-multi-level-unlock.md` | 中 |
 | 2 | con/top 端到端集成测试 | init→add→serve→unlock→get with token 完整流程 | 中 |
 
 ## P1 — 新功能（需 spec/plan）
