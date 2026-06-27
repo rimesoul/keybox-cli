@@ -3,11 +3,11 @@ use crate::error::KeyboxError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
-    /// Unlock a crypt level: provide ROT, get back a token
+    /// Unlock crypt level(s): provide ROTs, get back one token with all scopes
     Unlock {
-        level: String,              // "con" or "top"
-        passphrase: Option<String>, // for con
-        keyfile_path: Option<String>, // for top
+        levels: Vec<String>,            // ["con"] or ["con", "top"]
+        passphrase: Option<String>,     // for con
+        keyfile_path: Option<String>,   // for top
         timeout_minutes: u64,
     },
     /// Get a credential field (metadata or password)
@@ -33,7 +33,7 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Response {
     /// Successfully unlocked, returns access token
-    Unlocked { token: String, level: String },
+    Unlocked { token: String, levels: Vec<String> },
     /// Credential field value (password bytes as string, description string, etc.)
     Value(String),
     /// Credential list as JSON
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn test_request_unlock_roundtrip() {
         let req = Request::Unlock {
-            level: "con".into(),
+            levels: vec!["con".into()],
             passphrase: Some("hunter2".into()),
             keyfile_path: None,
             timeout_minutes: 30,
@@ -125,7 +125,7 @@ mod tests {
     fn test_response_unlocked_roundtrip() {
         let resp = Response::Unlocked {
             token: "tok_abc".into(),
-            level: "con".into(),
+            levels: vec!["con".into()],
         };
         let data = serialize_response(&resp).unwrap();
         let parsed = deserialize_response(&data).unwrap();

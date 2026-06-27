@@ -59,6 +59,17 @@ impl DaemonState {
             identities.insert("secret".to_string(), secret_id);
         }
 
+        // Pre-check: warn if no unlockable levels exist
+        let has_con = store.key_pairs.contains_key("con");
+        let has_top = store.key_pairs.contains_key("top");
+        if !has_con && !has_top {
+            eprintln!(
+                "Warning: No unlockable levels found. \
+                 Run 'keybox init --level confidential' or 'keybox init --level top-secret' \
+                 to enable daemon unlock."
+            );
+        }
+
         Ok(DaemonState {
             base,
             store,
@@ -71,8 +82,8 @@ impl DaemonState {
 
     pub fn handle_request(&mut self, request: Request) -> Response {
         match request {
-            Request::Unlock { level, passphrase, keyfile_path, timeout_minutes } => {
-                self.handle_unlock(&level, passphrase.as_deref(), keyfile_path.as_deref(), timeout_minutes)
+            Request::Unlock { levels, passphrase, keyfile_path, timeout_minutes } => {
+                self.handle_unlock(&levels, passphrase.as_deref(), keyfile_path.as_deref(), timeout_minutes)
             }
             Request::Get { domain, account, field, token } => {
                 self.handle_get(&domain, &account, &field, token.as_deref())
@@ -92,69 +103,82 @@ impl DaemonState {
 
     fn handle_unlock(
         &mut self,
-        level: &str,
+        levels: &[String],
         passphrase: Option<&str>,
         keyfile_path: Option<&str>,
         timeout_minutes: u64,
     ) -> Response {
-        let kp = match self.store.key_pairs.get(level) {
-            Some(k) => k,
-            None => return Response::Error(format!(
-                "Level '{}' not initialized. Run 'keybox init --level {}' first.",
-                level, level
-            )),
-        };
+        if levels.is_empty() {
+            return Response::Error("No levels specified".into());
+        }
 
-        let identity_bytes = match level {
-            "con" => {
-                let pp = match passphrase {
-                    Some(p) => p,
-                    None => return Response::Error("Passphrase required for con level".into()),
-                };
-                let encrypted = match ops::b64_decode(&kp.encrypted_private_key) {
-                    Ok(e) => e,
-                    Err(e) => return Response::Error(e.to_string()),
-                };
-                match age_ops::decrypt_with_passphrase(&encrypted, pp) {
-                    Ok(b) => b,
-                    Err(e) => return Response::Error(e.to_string()),
+        let mut unlocked_scopes: Vec<String> = Vec::new();
+
+        for level in levels {
+            let kp = match self.store.key_pairs.get(level) {
+                Some(k) => k,
+                None => return Response::Error(format!(
+                    "Level '{}' not initialized. Run 'keybox init --level {}' first.",
+                    level, level
+                )),
+            };
+
+            let identity_bytes = match level.as_str() {
+                "con" => {
+                    let pp = match passphrase {
+                        Some(p) => p,
+                        None => return Response::Error("Passphrase required for con level".into()),
+                    };
+                    let encrypted = match ops::b64_decode(&kp.encrypted_private_key) {
+                        Ok(e) => e,
+                        Err(e) => return Response::Error(e.to_string()),
+                    };
+                    match age_ops::decrypt_with_passphrase(&encrypted, pp) {
+                        Ok(b) => b,
+                        Err(e) => return Response::Error(e.to_string()),
+                    }
                 }
-            }
-            "top" => {
-                let path = match keyfile_path {
-                    Some(p) => p,
-                    None => return Response::Error("Key file path required for top level".into()),
-                };
-                let file_content = match std::fs::read(path) {
-                    Ok(c) => c,
-                    Err(e) => return Response::Error(format!("Failed to read key file: {}", e)),
-                };
-                if file_content.is_empty() {
-                    return Response::Error("Key file is empty".into());
+                "top" => {
+                    let path = match keyfile_path {
+                        Some(p) => p,
+                        None => return Response::Error("Key file path required for top level".into()),
+                    };
+                    let file_content = match std::fs::read(path) {
+                        Ok(c) => c,
+                        Err(e) => return Response::Error(format!("Failed to read key file: {}", e)),
+                    };
+                    if file_content.is_empty() {
+                        return Response::Error("Key file is empty".into());
+                    }
+                    let aes_key = keyfile::derive_key_from_file(&file_content);
+                    let encrypted = match ops::b64_decode(&kp.encrypted_private_key) {
+                        Ok(e) => e,
+                        Err(e) => return Response::Error(e.to_string()),
+                    };
+                    match keyfile::decrypt_with_aes_gcm_keyfile(&encrypted, &aes_key) {
+                        Ok(b) => b,
+                        Err(e) => return Response::Error(e.to_string()),
+                    }
                 }
-                let aes_key = keyfile::derive_key_from_file(&file_content);
-                let encrypted = match ops::b64_decode(&kp.encrypted_private_key) {
-                    Ok(e) => e,
-                    Err(e) => return Response::Error(e.to_string()),
-                };
-                match keyfile::decrypt_with_aes_gcm_keyfile(&encrypted, &aes_key) {
-                    Ok(b) => b,
-                    Err(e) => return Response::Error(e.to_string()),
-                }
-            }
-            _ => return Response::Error(format!("Unknown level: {}", level)),
-        };
+                _ => return Response::Error(format!("Unknown level: {}", level)),
+            };
 
-        let identity_str = String::from_utf8_lossy(&identity_bytes);
-        let identity = match age::x25519::Identity::from_str(identity_str.trim()) {
-            Ok(id) => id,
-            Err(e) => return Response::Error(format!("Invalid identity: {}", e)),
-        };
+            let identity_str = String::from_utf8_lossy(&identity_bytes);
+            let identity = match age::x25519::Identity::from_str(identity_str.trim()) {
+                Ok(id) => id,
+                Err(e) => return Response::Error(format!("Invalid identity: {}", e)),
+            };
 
-        self.identities.insert(level.to_string(), identity);
+            self.identities.insert(level.clone(), identity);
+            unlocked_scopes.push(level.clone());
+        }
 
-        let token = self.tokens.generate(level, timeout_minutes);
-        Response::Unlocked { token, level: level.to_string() }
+        if unlocked_scopes.is_empty() {
+            return Response::Error("No levels were unlocked".into());
+        }
+
+        let token = self.tokens.generate(&unlocked_scopes, timeout_minutes);
+        Response::Unlocked { token, levels: unlocked_scopes }
     }
 
     fn handle_get(

@@ -128,11 +128,11 @@ pub enum Command {
     /// Start the background daemon
     Serve,
 
-    /// Unlock daemon for crypt level(s)
+    /// Unlock daemon for crypt level(s). Default: all initialized levels.
     Unlock {
-        /// Crypt level(s): con, top, or con,top
+        /// Crypt level(s): confidential, top-secret, or both (default: both)
         #[arg(long)]
-        level: String,
+        level: Option<String>,
 
         /// Token timeout in minutes (default: 30)
         #[arg(long, default_value = "30")]

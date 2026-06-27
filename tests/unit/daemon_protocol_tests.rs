@@ -3,7 +3,7 @@ use keybox::daemon::protocol;
 #[test]
 fn test_roundtrip_unlock_request() {
     let req = protocol::Request::Unlock {
-        level: "con".to_string(),
+        levels: vec!["con".to_string()],
         passphrase: Some("my-secret-passphrase".to_string()),
         keyfile_path: None,
         timeout_minutes: 30,
@@ -49,7 +49,7 @@ fn test_roundtrip_lock_request() {
 fn test_roundtrip_unlocked_response() {
     let resp = protocol::Response::Unlocked {
         token: "abc123".to_string(),
-        level: "con".to_string(),
+        levels: vec!["con".to_string()],
     };
     let data = protocol::serialize_response(&resp).expect("serialize should succeed");
     let recovered = protocol::deserialize_response(&data).expect("deserialize should succeed");

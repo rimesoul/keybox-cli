@@ -637,7 +637,7 @@ fn handle_serve(base: &Path) -> Result<(), KeyboxError> {
 
 fn handle_unlock(
     base: &Path,
-    level: &str,
+    level_opt: Option<&str>,
     timeout: u64,
     clipboard: bool,
     env: Option<&str>,
@@ -645,34 +645,90 @@ fn handle_unlock(
     use keybox::daemon::client;
     use keybox::daemon::protocol::Response;
 
-    let (passphrase, keyfile_path) = match level {
-        "con" => {
-            let pp = interactive::prompt_password("Enter master passphrase for confidential tier: ")?;
-            (Some(pp), None)
-        }
-        "top" => {
-            let path = interactive::prompt_input("Key file path for top-secret tier: ")?;
-            if path.is_empty() {
-                return Err(KeyboxError::input("Key file path is required for top-secret tier"));
+    // Determine target levels
+    let target_levels: Vec<String> = match level_opt {
+        Some(l) => l.split(',').map(|s| s.trim().to_string()).collect(),
+        None => {
+            // Default: all initialized unlockable levels
+            let kp = get_keystore_path(base);
+            let store = ops::load_store(&kp, &ops::load_aes_key_bytes(base)?)?;
+            let mut levels = Vec::new();
+            if store.key_pairs.contains_key("con") {
+                levels.push("con".to_string());
             }
-            (None, Some(path))
+            if store.key_pairs.contains_key("top") {
+                levels.push("top".to_string());
+            }
+            if levels.is_empty() {
+                return Err(KeyboxError::input(
+                    "No unlockable levels found. \
+                     Run 'keybox init --level confidential' or 'keybox init --level top-secret'."
+                ));
+            }
+            levels
         }
-        _ => return Err(KeyboxError::input(format!("Unknown level: '{}'. Use 'con' or 'top'.", level))),
     };
 
-    let response = client::unlock(base, level, passphrase.as_deref(), keyfile_path.as_deref(), timeout)?;
+    // Validate levels are known
+    for l in &target_levels {
+        if l != "con" && l != "top" {
+            return Err(KeyboxError::input(format!("Unknown level: '{}'. Use 'con' or 'top'.", l)));
+        }
+    }
+
+    let is_multi = target_levels.len() > 1;
+
+    // Gather ROTs with retry
+    let mut passphrase: Option<String> = None;
+    let mut keyfile_path: Option<String> = None;
+
+    for level in &target_levels {
+        match level.as_str() {
+            "con" => {
+                let pp = interactive::prompt_password(
+                    "Enter master passphrase for confidential tier: "
+                )?;
+                passphrase = Some(pp);
+            }
+            "top" => {
+                let path = interactive::prompt_input(
+                    "Key file path for top-secret tier: "
+                )?;
+                if path.is_empty() {
+                    return Err(KeyboxError::input("Key file path is required for top-secret tier"));
+                }
+                keyfile_path = Some(path);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    // Send unlock request with all gathered ROTs
+    let response = client::unlock(
+        base,
+        &target_levels,
+        passphrase.as_deref(),
+        keyfile_path.as_deref(),
+        timeout,
+    )?;
 
     match response {
-        Response::Unlocked { token, level: l } => {
-            eprintln!("Unlocked {} tier.", l);
+        Response::Unlocked { token, levels } => {
+            eprintln!("Unlocked tiers: {}", levels.join(", "));
 
             if let Some(var_name) = env {
-                let trailing = get_trailing_args();
-                if trailing.is_empty() {
-                    return Err(KeyboxError::input("no command specified after -- separator"));
+                if is_multi {
+                    eprintln!("Warning: --env not supported with multi-level unlock");
+                    eprintln!("Token printed to stdout.");
+                    println!("{}", token);
+                } else {
+                    let trailing = get_trailing_args();
+                    if trailing.is_empty() {
+                        return Err(KeyboxError::input("no command specified after -- separator"));
+                    }
+                    let code = keybox::env_run::run_with_env(var_name, token.as_bytes(), &trailing)?;
+                    std::process::exit(code);
                 }
-                let code = keybox::env_run::run_with_env(var_name, token.as_bytes(), &trailing)?;
-                process::exit(code);
             } else if clipboard {
                 copy_to_clipboard(token.as_bytes())?;
                 eprintln!("Token copied to clipboard.");
@@ -880,7 +936,7 @@ fn main() -> Result<(), String> {
             timeout,
             clipboard,
             env,
-        } => handle_unlock(&base, &level, timeout, clipboard, env.as_deref())?,
+        } => handle_unlock(&base, level.as_deref(), timeout, clipboard, env.as_deref())?,
         Command::Lock => handle_lock(&base)?,
         Command::Stop => handle_stop(&base)?,
         Command::Generate(args) => handle_generate(&base, &args)?,

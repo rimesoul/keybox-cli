@@ -119,13 +119,13 @@ pub fn is_daemon_running(base: &Path) -> bool {
 /// Send an Unlock request to the daemon.
 pub fn unlock(
     base: &Path,
-    level: &str,
+    levels: &[String],
     passphrase: Option<&str>,
     keyfile_path: Option<&str>,
     timeout_minutes: u64,
 ) -> Result<Response, KeyboxError> {
     send_request(base, &Request::Unlock {
-        level: level.to_string(),
+        levels: levels.to_vec(),
         passphrase: passphrase.map(|s| s.to_string()),
         keyfile_path: keyfile_path.map(|s| s.to_string()),
         timeout_minutes,

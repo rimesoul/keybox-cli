@@ -345,7 +345,7 @@ fn test_unlock_command() {
     let cli = Cli::parse_from(["keybox", "unlock", "--level", "con,top", "--timeout", "15"]);
     match &cli.command {
         Command::Unlock { level, timeout, clipboard, env } => {
-            assert_eq!(level, "con,top");
+            assert_eq!(level.as_deref(), Some("con,top"));
             assert_eq!(*timeout, 15);
             assert!(!clipboard);
             assert!(env.is_none());
