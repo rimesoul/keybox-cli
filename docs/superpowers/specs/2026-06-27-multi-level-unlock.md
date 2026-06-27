@@ -71,6 +71,17 @@ Unlocked { token: String, levels: Vec<String> },
 
 ## 3. CLI Behavior
 
+### 3.0 Daemon Pre-Check
+
+On `keybox serve` startup, the daemon checks key_pairs in the keystore:
+
+| State | Action |
+|-------|--------|
+| Neither con nor top initialized | Print warning: `Warning: No unlockable levels found. Run 'keybox init --level confidential' or 'keybox init --level top-secret' to enable daemon unlock.` — daemon still starts, serves metadata |
+| At least one initialized | Normal startup, no warning |
+
+The same check applies in `keybox unlock` before prompting: if no levels are initialized, error immediately without generating a token.
+
 ### 3.1 `keybox unlock` (no `--level`)
 
 Default target: all initialized con/top tiers.
@@ -117,7 +128,42 @@ Same as default (no `--level`). Both tiers verified.
 | Multi level | Token → clipboard | Error: `--env not supported with multi-level unlock` |
 | Default (stdout) | — | Token printed to stdout |
 
-### 3.5 Error Cases
+### 3.5 Timeout
+
+- `--timeout <minutes>` on the command line always takes precedence
+- Default (no `--timeout`): 30 minutes
+- Future: configurable default in `~/.config/keybox/keybox.toml` (not in this spec)
+
+### 3.6 ROT Retry Behavior
+
+Both passphrase and key file verification follow the same retry pattern:
+
+```
+Con passphrase:  prompt → incorrect → "Incorrect passphrase." → retry (up to 3 attempts)
+Top key file:    prompt → decrypt fails → "Key file verification failed." → retry (up to 3 attempts)
+```
+
+After 3 failed attempts, abort without generating a token. If verifying multiple levels,
+failures accumulate independently — if con passes but top fails 3 times, abort entirely
+(no token generated for either level).
+
+### 3.7 Non-interactive Mode — Shell Variable Expansion Risk
+
+Using shell variables on the command line like `-p $PASSWORD` or `-p $env:PASSWORD`
+creates a security risk: the shell expands the variable **before** keybox starts,
+exposing the secret in shell history and process lists.
+
+**Not supported.** Users must use environment variable injection:
+
+```
+# ✅ Correct
+KEYBOX_MASTER_PASSPHRASE=mypass keybox unlock --no-interactive
+
+# ❌ Not supported — variable expanded by shell before keybox runs
+keybox unlock --no-interactive -p $PASSWORD
+```
+
+### 3.8 Error Cases
 
 | Scenario | Error |
 |----------|-------|
@@ -139,9 +185,9 @@ Same as default (no `--level`). Both tiers verified.
 | File | Change |
 |------|--------|
 | `cli.rs` | `level: String` → `level: Option<String>` |
-| `main.rs` `handle_unlock` | Default `"con,top"`, split loop, single token with multi scopes |
+| `main.rs` `handle_unlock` | Default `"con,top"`, split loop, single token with multi scopes, retry logic |
 | `daemon/token.rs` | `scope: String` → `scopes: Vec<String>` |
 | `daemon/protocol.rs` | `level: String` → `levels: Vec<String>` |
-| `daemon/server.rs` | `handle_unlock` returns `levels: Vec<String>` |
+| `daemon/server.rs` | `handle_unlock` returns `levels: Vec<String>`; startup pre-check for no unlockable levels |
 | `daemon/client.rs` | Update `unlock()` return type |
-| `tests/integration/` | Add multi-level unlock tests |
+| `tests/integration/` | Add multi-level unlock tests, retry tests, daemon warning test |
