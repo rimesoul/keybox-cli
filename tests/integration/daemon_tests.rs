@@ -1,3 +1,13 @@
+// Daemon integration tests.
+//
+// Current scope:
+// - test_init_command_works: verify keystore is created on add
+//
+// Future (requires non-interactive unlock support):
+// - daemon lifecycle (start → unlock → get with token → lock → stop)
+// - wrong passphrase rejection
+// - token expiry
+
 use assert_cmd::Command;
 use tempfile::TempDir;
 
@@ -5,20 +15,13 @@ use tempfile::TempDir;
 fn test_init_command_works() {
     let dir = TempDir::new().unwrap();
 
-    // Init with default (secret tier) — use --stdin to skip interactive
-    // Since init prompts for passphrase, we use a simple approach:
-    // Just run init to verify the keystore file is created
-    // The init command is interactive, but it auto-creates the secret tier
-    // We can't fully test it non-interactively, but we can verify the keystore exists
-    //
-    // For simplicity, add a credential which auto-inits the keystore
-    Command::cargo_bin("keybox").unwrap()
+    Command::cargo_bin("keybox")
+        .unwrap()
         .env("KEYBOX_CONFIG_DIR", dir.path().to_str().unwrap())
         .args(["add", "test:user", "--stdin"])
         .write_stdin("testpass\n")
         .assert()
         .success();
 
-    // Verify keystore file exists
     assert!(dir.path().join("keybox.keystore").exists());
 }
